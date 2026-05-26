@@ -1,50 +1,21 @@
 {
-  "name": "composer-api",
-  "version": "0.1.0",
-  "private": false,
+  "name": "cursor-sdk-proxy",
+  "version": "1.0.0",
+  "private": true,
   "type": "module",
-  "description": "OpenAI-compatible Chat Completions and Responses API proxy for Cursor Composer.",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/standardagents/composer-api.git"
-  },
-  "homepage": "https://github.com/standardagents/composer-api#readme",
-  "bugs": {
-    "url": "https://github.com/standardagents/composer-api/issues"
+  "engines": {
+    "node": ">=20.0.0"
   },
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
-    "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0",
-    "sdk:opencode-bridge": "node scripts/cursor-sdk-opencode-bridge.mjs",
-    "sdk:responses": "node scripts/cursor-sdk-responses-proxy.mjs",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/index.mjs --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\"",
     "typecheck": "tsc --noEmit",
-    "deploy": "vite build && wrangler deploy",
-    "db:migrate:local": "wrangler d1 migrations apply composer-api --local",
-    "db:migrate:remote": "wrangler d1 migrations apply composer-api --remote"
-  },
-  "keywords": [
-    "cursor",
-    "composer",
-    "openai",
-    "chat-completions",
-    "responses-api",
-    "cloudflare-workers"
-  ],
-  "license": "MIT",
-  "dependencies": {
-    "@cloudflare/containers": "^0.3.4",
-    "@cursor/sdk": "^1.0.13",
-    "lucide": "^0.557.0"
+    "start": "node dist/index.mjs",
+    "dev": "tsx src/index.ts"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.37.2",
-    "@cloudflare/workers-types": "^4.20260520.0",
-    "typescript": "^5.9.3",
-    "vite": "^8.0.13",
-    "vitest": "^4.0.15",
-    "wrangler": "^4.93.0"
+    "@types/node": "^20.14.0",
+    "esbuild": "^0.21.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.5.0"
   }
 }
