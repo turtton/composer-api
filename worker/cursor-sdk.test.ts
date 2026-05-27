@@ -24,6 +24,86 @@ describe("Cursor SDK harness", () => {
     });
   });
 
+  it("delimits and prettifies web search results before injecting them as assistant text", () => {
+    const chunk = [
+      "Links:",
+      "1. [Example](https://example.com)",
+      "",
+      "Highlights:",
+      "<result id=\"1\"><title>Example</title><url>https://example.com</url><content>Body line 1\n[...]\nBody line 2</content></result>",
+      "<result id=\"2\"><title>Two</title><url>https://two.example.com</url><content>Short body.</content></result>"
+    ].join("\n");
+    const successPayload = protoMessage([
+      protoBytesField(
+        1,
+        protoMessage([
+          protoBytesField(
+            1,
+            protoMessage([
+              protoStringField(1, "Web search results"),
+              protoStringField(2, ""),
+              protoStringField(3, chunk)
+            ])
+          )
+        ])
+      )
+    ]);
+    const formatted = cursorSdkTestExports.formatHostedSdkToolResult("websearch", { query: "Astro" }, successPayload);
+    expect(formatted.startsWith("\n\n")).toBe(true);
+    expect(formatted.endsWith("\n\n")).toBe(true);
+    expect(formatted).toContain("### 1. Example");
+    expect(formatted).toContain("### 2. Two");
+    expect(formatted).toContain("https://example.com");
+    expect(formatted).not.toMatch(/<\/?result\b/);
+    expect(formatted).not.toContain("[...]");
+    expect(formatted).toContain("Body line 1\n…\nBody line 2");
+  });
+
+  it("preserves <result>-like content that the prettifier cannot parse", () => {
+    const chunk = "Highlights:\n<result id=\"99\"><title>Broken</title>";
+    const successPayload = protoMessage([
+      protoBytesField(
+        1,
+        protoMessage([
+          protoBytesField(
+            1,
+            protoMessage([
+              protoStringField(1, "Web search results"),
+              protoStringField(2, ""),
+              protoStringField(3, chunk)
+            ])
+          )
+        ])
+      )
+    ]);
+    const formatted = cursorSdkTestExports.formatHostedSdkToolResult("websearch", { query: "broken" }, successPayload);
+    expect(formatted).toContain("<result id=\"99\">\n");
+  });
+
+  it("truncates very long web search result bodies", () => {
+    const longContent = "x".repeat(5000);
+    const chunk = `<result id="1"><title>Long</title><url>https://long.example.com</url><content>${longContent}</content></result>`;
+    const successPayload = protoMessage([
+      protoBytesField(
+        1,
+        protoMessage([
+          protoBytesField(
+            1,
+            protoMessage([
+              protoStringField(1, "Web search results"),
+              protoStringField(2, ""),
+              protoStringField(3, chunk)
+            ])
+          )
+        ])
+      )
+    ]);
+    const formatted = cursorSdkTestExports.formatHostedSdkToolResult("websearch", { query: "long" }, successPayload);
+    expect(formatted).toContain("### 1. Long");
+    expect(formatted).toMatch(/…\n\n$/);
+    expect(formatted.length).toBeLessThan(2000);
+  });
+
   it("decodes web search interaction queries from the SDK stream", () => {
     const query = protoMessage([
       protoVarintField(1, 42),
@@ -257,11 +337,14 @@ describe("Cursor SDK harness", () => {
     expect(events).toEqual([
       {
         type: "text",
-        text: [
-          'CURSOR WEB SEARCH RESULT (query: "opencode docs"):',
-          "- OpenCode docs (https://opencode.ai/docs)",
-          "  OpenCode is an open source coding agent."
-        ].join("\n")
+        text:
+          "\n\n" +
+          [
+            'CURSOR WEB SEARCH RESULT (query: "opencode docs"):',
+            "- OpenCode docs (https://opencode.ai/docs)",
+            "  OpenCode is an open source coding agent."
+          ].join("\n") +
+          "\n\n"
       }
     ]);
   });

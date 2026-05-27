@@ -154,12 +154,21 @@ export const cursorSdkTestExports = {
   encodeAgentClientInteractionResponseApproved,
   encodeAgentClientRequestContextResult,
   encodeAgentClientRunRequest,
+  formatHostedSdkToolResult,
   isCursorHostedSdkToolCall,
   isEmittableSdkToolCall,
   normalizeSdkToolCallForOpenCode,
   parseConnectProtoFrames,
   sdkTimeoutMsFromEnv
 };
+
+function formatHostedSdkToolResult(
+  kind: "websearch" | "webfetch",
+  args: Record<string, unknown>,
+  resultBytes: Uint8Array
+): string {
+  return kind === "websearch" ? formatWebSearchResult(args, resultBytes) : formatWebFetchResult(args, resultBytes);
+}
 
 async function* streamCursorLocalSdkRun(
   env: Env,
@@ -858,16 +867,16 @@ function formatWebSearchResult(args: Record<string, unknown>, resultBytes: Uint8
       const url = stringField(refFields, 2) || "";
       const chunk = stringField(refFields, 3) || "";
       lines.push(`- ${title}${url ? ` (${url})` : ""}`);
-      if (chunk) lines.push(`  ${chunk}`);
+      if (chunk) lines.push(`  ${normalizeResultMarkup(chunk)}`);
     }
-    return lines.join("\n");
+    return delimitHostedToolResult(lines.join("\n"));
   }
   const errorBytes = bytesField(fields, 2);
   if (errorBytes) {
     const error = stringField(decodeProtobufFields(errorBytes), 1) || "Web search failed";
-    return `CURSOR WEB SEARCH ERROR (query: ${JSON.stringify(query)}): ${error}`;
+    return delimitHostedToolResult(`CURSOR WEB SEARCH ERROR (query: ${JSON.stringify(query)}): ${error}`);
   }
-  return `CURSOR WEB SEARCH RESULT (query: ${JSON.stringify(query)}): [rejected or empty]`;
+  return delimitHostedToolResult(`CURSOR WEB SEARCH RESULT (query: ${JSON.stringify(query)}): [rejected or empty]`);
 }
 
 function formatWebFetchResult(args: Record<string, unknown>, resultBytes: Uint8Array): string {
@@ -878,16 +887,71 @@ function formatWebFetchResult(args: Record<string, unknown>, resultBytes: Uint8A
     const successFields = decodeProtobufFields(successBytes);
     const url = stringField(successFields, 1) || requestedUrl;
     const markdown = stringField(successFields, 2) || "";
-    return [`CURSOR WEB FETCH RESULT (url: ${JSON.stringify(url)}):`, markdown || "[empty body]"].join("\n");
+    const body = markdown
+      ? truncateHostedBody(collapseEllipsisMarkers(normalizeResultMarkup(markdown)), HOSTED_FETCH_BODY_LIMIT)
+      : "[empty body]";
+    return delimitHostedToolResult([`CURSOR WEB FETCH RESULT (url: ${JSON.stringify(url)}):`, body].join("\n"));
   }
   const errorBytes = bytesField(fields, 2);
   if (errorBytes) {
     const errorFields = decodeProtobufFields(errorBytes);
     const url = stringField(errorFields, 1) || requestedUrl;
     const error = stringField(errorFields, 2) || "Web fetch failed";
-    return `CURSOR WEB FETCH ERROR (url: ${JSON.stringify(url)}): ${error}`;
+    return delimitHostedToolResult(`CURSOR WEB FETCH ERROR (url: ${JSON.stringify(url)}): ${error}`);
   }
-  return `CURSOR WEB FETCH RESULT (url: ${JSON.stringify(requestedUrl)}): [rejected or empty]`;
+  return delimitHostedToolResult(`CURSOR WEB FETCH RESULT (url: ${JSON.stringify(requestedUrl)}): [rejected or empty]`);
+}
+
+function delimitHostedToolResult(text: string): string {
+  const trimmed = text.replace(/\s+$/u, "");
+  return `\n\n${trimmed}\n\n`;
+}
+
+const HOSTED_RESULT_BODY_LIMIT = 1200;
+const HOSTED_FETCH_BODY_LIMIT = 6000;
+
+function normalizeResultMarkup(text: string): string {
+  return prettifyResultBlocks(text)
+    .replace(/<\/result>(?!\s)/g, "</result>\n")
+    .replace(/<result\b([^>]*)>(?!\s)/g, "<result$1>\n");
+}
+
+function prettifyResultBlocks(text: string): string {
+  return text.replace(
+    /<result\s+id="(\d+)"\s*>\s*<title>([\s\S]*?)<\/title>\s*<url>([\s\S]*?)<\/url>\s*<content>([\s\S]*?)<\/content>\s*<\/result>/g,
+    (_match, id: string, rawTitle: string, rawUrl: string, rawContent: string) => {
+      const title = decodeHostedXmlEntities(rawTitle).trim();
+      const url = decodeHostedXmlEntities(rawUrl).trim();
+      const body = truncateHostedBody(collapseEllipsisMarkers(decodeHostedXmlEntities(rawContent)).trim(), HOSTED_RESULT_BODY_LIMIT);
+      const header = `### ${id}. ${title || "Untitled"}`;
+      const lines = [header];
+      if (url) lines.push(url);
+      if (body) {
+        lines.push("");
+        lines.push(body);
+      }
+      return lines.join("\n");
+    }
+  );
+}
+
+function collapseEllipsisMarkers(text: string): string {
+  return text.replace(/(?:\s*\[\.\.\.\]\s*\n)+/g, "\n…\n").replace(/\[\.\.\.\]/g, "…");
+}
+
+function truncateHostedBody(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  const head = text.slice(0, maxLength).replace(/\s+\S*$/u, "").trimEnd();
+  return `${head} …`;
+}
+
+function decodeHostedXmlEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
 }
 
 function isEmittableSdkToolCall(toolCall: CursorToolCall): boolean {
