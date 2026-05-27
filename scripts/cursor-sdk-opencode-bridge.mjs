@@ -159,7 +159,11 @@ async function proxySdkRun(response, input) {
           if (requestContext) {
             contextSent = true;
             request.write(connectFrame(encodeAgentClientRequestContextResult(requestContext)));
-            request.end();
+            continue;
+          }
+          const interactionQuery = decodeInteractionQueryEvent(frame.payload);
+          if (interactionQuery) {
+            request.write(connectFrame(encodeAgentClientInteractionResponseApproved(interactionQuery)));
             continue;
           }
           response.write(frame.raw);
@@ -170,6 +174,7 @@ async function proxySdkRun(response, input) {
         if (headersSent && status === 200 && contentType.includes("application/connect+proto")) {
           for (const frame of parser.flush()) response.write(frame.raw);
         }
+        if (!request.writableEnded) request.end();
         response.end();
         finish();
       });
@@ -270,6 +275,37 @@ function decodeRequestContextEvent(payload) {
   return null;
 }
 
+const INTERACTION_QUERY_FIELDS = { websearch: 2, webfetch: 9 };
+
+function decodeInteractionQueryEvent(payload) {
+  try {
+    for (const field of decodeProtobufFields(payload)) {
+      if (field.no !== 7 || !(field.value instanceof Uint8Array)) continue;
+      const fields = decodeProtobufFields(field.value);
+      const id = numberField(fields, 1) || 0;
+      for (const [kind, fieldNo] of Object.entries(INTERACTION_QUERY_FIELDS)) {
+        if (fields.some((item) => item.no === fieldNo && item.value instanceof Uint8Array)) {
+          return { id, kind };
+        }
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function encodeAgentClientInteractionResponseApproved(input) {
+  const approved = protoMessage([]);
+  const responseFieldNo = INTERACTION_QUERY_FIELDS[input.kind];
+  const wrapper = protoMessage([protoMessageField(1, approved)]);
+  const interactionResponse = protoMessage([
+    protoVarintField(1, input.id),
+    protoMessageField(responseFieldNo, wrapper)
+  ]);
+  return protoMessage([protoMessageField(6, interactionResponse)]);
+}
+
 function encodeAgentClientRequestContextResult(input) {
   const env = protoMessage([
     protoStringField(1, "SDK OpenCode bridge"),
@@ -282,11 +318,11 @@ function encodeAgentClientRequestContextResult(input) {
   ]);
   const requestContext = protoMessage([
     protoMessageField(4, env),
-    protoVarintField(17, false),
-    protoVarintField(24, false),
+    protoVarintField(17, true),
+    protoVarintField(24, true),
     protoVarintField(32, true),
     protoVarintField(33, true),
-    protoVarintField(35, false),
+    protoVarintField(35, true),
     protoVarintField(36, true),
     protoVarintField(39, true),
     protoVarintField(40, true),

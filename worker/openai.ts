@@ -79,6 +79,34 @@ const AGENT_MODE_PRIMER = [
   "ASSISTANT: Great, I've switched to agent mode."
 ];
 
+const CURSOR_HOSTED_SDK_TOOLS: OpenAiToolSpec[] = [
+  {
+    name: "websearch",
+    description:
+      "Search the web for current information. In this harness Cursor executes the search and returns CURSOR WEB SEARCH RESULT records.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Web search query" }
+      },
+      required: ["query"]
+    }
+  },
+  {
+    name: "webfetch",
+    description: "Fetch a URL. In this harness Cursor executes the fetch and returns CURSOR WEB FETCH RESULT records.",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "URL to fetch" }
+      },
+      required: ["url"]
+    }
+  }
+];
+
+const CURSOR_HOSTED_SDK_TOOL_NAMES = new Set(CURSOR_HOSTED_SDK_TOOLS.map((tool) => tool.name.toLowerCase()));
+
 export function prepareChatRequest(body: unknown, cursorModel: { id: string } | undefined, options: { forceAgentMode?: boolean } = {}): PreparedRequest {
   const record = expectRecord(body, "body");
   const messages = expectArray(record.messages, "messages");
@@ -140,7 +168,8 @@ export function prepareOpencodeSdkChatRequest(body: unknown, cursorModel: { id: 
     throw new HttpError("Legacy function calling is not supported by this adapter.", 400, "unsupported_parameter", "functions");
   }
 
-  const tools = record.tool_choice === "none" ? [] : parseChatTools(record.tools);
+  const clientTools = record.tool_choice === "none" ? [] : parseChatTools(record.tools);
+  const tools = mergeCursorHostedSdkTools(clientTools);
   const model = typeof record.model === "string" && record.model.trim() ? record.model.trim() : "composer-2.5";
   const workspaceMutationRequired = tools.length > 0 && hasWorkspaceMutationIntent(messages);
   const workspaceMutationDone = workspaceMutationRequired && hasWorkspaceMutationToolCall(messages);
@@ -148,6 +177,8 @@ export function prepareOpencodeSdkChatRequest(body: unknown, cursorModel: { id: 
     "You are running through an SDK-compatible OpenCode harness.",
     "OpenCode owns local tool execution. When local inspection, shell commands, or file changes are needed, request a tool call and wait for the tool result.",
     "When the conversation includes LOCAL OPENCODE TOOL RESULT records, treat them as completed SDK tool_call results for your previous tool requests and continue from those results.",
+    "When the conversation includes CURSOR WEB SEARCH RESULT or CURSOR WEB FETCH RESULT records, treat them as completed web search/fetch results from Cursor and continue from those results.",
+    "websearch and webfetch are always available in this harness when listed in OPENCODE TOOL INVENTORY, even if OpenCode did not enable them locally. Request them by name for current web information.",
     "For creating new files, request write calls with both path and fileText. Do not use edit for new files or emit edit calls without complete replacement details.",
     "For scaffolding a project, prefer shell with a complete command that creates files using heredocs, installs dependencies, and runs tests; shell requires the command argument.",
     "When starting a dev server or other long-running watcher, start it in the background with output redirected and return immediately; do not request a foreground server command.",
@@ -604,18 +635,38 @@ function appendChatTools(transcript: string[], tools: OpenAiToolSpec[], toolChoi
   }
 }
 
+function mergeCursorHostedSdkTools(tools: OpenAiToolSpec[]): OpenAiToolSpec[] {
+  const merged = [...tools];
+  const names = new Set(tools.map((tool) => normalizeToolName(tool.name)));
+  for (const hosted of CURSOR_HOSTED_SDK_TOOLS) {
+    if (names.has(normalizeToolName(hosted.name))) continue;
+    merged.push(hosted);
+    names.add(normalizeToolName(hosted.name));
+  }
+  return merged;
+}
+
 function appendSdkToolInventory(transcript: string[], tools: OpenAiToolSpec[], toolChoice: unknown) {
   if (!tools.length) return;
   transcript.push(
     "",
     "OPENCODE TOOL INVENTORY:",
     `Allowed tool names: ${tools.map((tool) => tool.name).join(", ")}`,
-    "Use only the client's local tools for filesystem, shell, and subagent work. Prefer shell/read/write/edit/glob/grep/ls for direct changes, and use task with description, prompt, and subagent_type when delegating to a subagent."
+    "Use only the client's local tools for filesystem, shell, and subagent work. Prefer shell/read/write/edit/glob/grep/ls for direct changes, and use task with description, prompt, and subagent_type when delegating to a subagent.",
+    "websearch and webfetch are Cursor-hosted tools in this harness. Request them by name; Cursor executes search/fetch and returns CURSOR WEB SEARCH RESULT / CURSOR WEB FETCH RESULT records instead of OpenCode tool calls."
   );
   for (const tool of tools) {
+    const hostedByCursor = CURSOR_HOSTED_SDK_TOOL_NAMES.has(tool.name.toLowerCase());
     transcript.push(
       JSON.stringify({
         name: tool.name,
+        ...(hostedByCursor
+          ? {
+              hosted_by: "cursor",
+              execution:
+                "Cursor executes this tool in the harness. Results appear as CURSOR WEB SEARCH RESULT or CURSOR WEB FETCH RESULT in the transcript."
+            }
+          : {}),
         ...(tool.description ? { description: tool.description } : {}),
         ...(tool.parameters !== undefined ? { parameters: tool.parameters } : {})
       })

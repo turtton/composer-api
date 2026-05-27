@@ -21,12 +21,20 @@ interface ProtobufField {
   value: number | Uint8Array;
 }
 
+type InteractionQueryKind = "websearch" | "webfetch";
+
 type LocalSdkDecodedEvent =
   | { type: "text"; text: string }
   | { type: "tool_call"; id: string; toolCall: CursorToolCall }
   | { type: "request_context"; id: number; execId?: string }
+  | { type: "interaction_query"; id: number; kind: InteractionQueryKind }
   | { type: "done" }
   | { type: "ignore" };
+
+const INTERACTION_QUERY_FIELD_BY_KIND: Record<InteractionQueryKind, number> = {
+  websearch: 2,
+  webfetch: 9
+};
 
 type ArgsKind =
   | "askQuestion"
@@ -138,9 +146,13 @@ export function resetCursorSdkSessionCacheForTest() {
 }
 
 export const cursorSdkTestExports = {
+  decodeInteractionQuery,
   decodeLocalAgentServerFrame,
   decodeSdkToolCall,
+  encodeAgentClientInteractionResponseApproved,
+  encodeAgentClientRequestContextResult,
   encodeAgentClientRunRequest,
+  isCursorHostedSdkToolCall,
   isEmittableSdkToolCall,
   normalizeSdkToolCallForOpenCode
 };
@@ -205,6 +217,10 @@ async function* streamCursorLocalSdkRun(
         } else if (event.type === "request_context") {
           if (uploadOpen && uploadWriter) {
             await writeSdkUpload(uploadWriter, encodeConnectFrame(encodeAgentClientRequestContextResult(event)));
+          }
+        } else if (event.type === "interaction_query") {
+          if (uploadOpen && uploadWriter) {
+            await writeSdkUpload(uploadWriter, encodeConnectFrame(encodeAgentClientInteractionResponseApproved(event)));
           }
         } else if (event.type === "done") {
           yield { type: "done", finalText: text, toolCalls };
@@ -370,6 +386,17 @@ function encodeAgentClientRunRequest(input: { agentId: string; messageId: string
   return protoMessage([protoMessageField(1, runRequest)]);
 }
 
+function encodeAgentClientInteractionResponseApproved(input: { id: number; kind: InteractionQueryKind }): Uint8Array {
+  const approved = protoMessage([]);
+  const responseFieldNo = INTERACTION_QUERY_FIELD_BY_KIND[input.kind];
+  const wrapper = protoMessage([protoMessageField(1, approved)]);
+  const interactionResponse = protoMessage([
+    protoVarintField(1, input.id),
+    protoMessageField(responseFieldNo, wrapper)
+  ]);
+  return protoMessage([protoMessageField(6, interactionResponse)]);
+}
+
 function encodeAgentClientRequestContextResult(input: { id: number; execId?: string }): Uint8Array {
   const env = protoMessage([
     protoStringField(1, "OpenCode local server"),
@@ -382,11 +409,11 @@ function encodeAgentClientRequestContextResult(input: { id: number; execId?: str
   ]);
   const requestContext = protoMessage([
     protoMessageField(4, env),
-    protoVarintField(17, false),
-    protoVarintField(24, false),
+    protoVarintField(17, true),
+    protoVarintField(24, true),
     protoVarintField(32, true),
     protoVarintField(33, true),
-    protoVarintField(35, false),
+    protoVarintField(35, true),
     protoVarintField(36, true),
     protoVarintField(39, true),
     protoVarintField(40, true),
@@ -415,6 +442,9 @@ function decodeLocalAgentServerFrame(payload: Uint8Array): LocalSdkDecodedEvent[
       } else if (field.no === 2 && field.value instanceof Uint8Array) {
         const event = decodeExecServerMessage(field.value);
         if (event) output.push(event);
+      } else if (field.no === 7 && field.value instanceof Uint8Array) {
+        const event = decodeInteractionQuery(field.value);
+        if (event) output.push(event);
       }
     }
   } catch (error) {
@@ -422,6 +452,17 @@ function decodeLocalAgentServerFrame(payload: Uint8Array): LocalSdkDecodedEvent[
     throw new HttpError(message, 502, "cursor_stream_error");
   }
   return output.length ? output : [{ type: "ignore" }];
+}
+
+function decodeInteractionQuery(payload: Uint8Array): LocalSdkDecodedEvent | null {
+  const fields = decodeProtobufFields(payload);
+  const id = numberField(fields, 1) || 0;
+  for (const [kind, fieldNo] of Object.entries(INTERACTION_QUERY_FIELD_BY_KIND) as Array<[InteractionQueryKind, number]>) {
+    if (fields.some((field) => field.no === fieldNo && field.value instanceof Uint8Array)) {
+      return { type: "interaction_query", id, kind };
+    }
+  }
+  return null;
 }
 
 function decodeExecServerMessage(payload: Uint8Array): LocalSdkDecodedEvent | null {
@@ -458,8 +499,14 @@ function decodeToolCallUpdate(payload: Uint8Array, completed: boolean): LocalSdk
   const callId = stringField(fields, 1) || stableToolCallId(payload);
   const toolCallBytes = bytesField(fields, 2);
   if (!toolCallBytes) return null;
-    const decoded = decodeSdkToolCall(toolCallBytes);
-    if (!decoded || (completed && decoded.hasResult)) return null;
+  const decoded = decodeSdkToolCall(toolCallBytes);
+  if (!decoded) return null;
+  if (completed && decoded.hasResult) {
+    const hostedText = decodeCursorHostedToolResultText(decoded.toolCall, toolCallBytes);
+    if (hostedText) return { type: "text", text: hostedText };
+    return null;
+  }
+  if (isCursorHostedSdkToolCall(decoded.toolCall)) return null;
   return { type: "tool_call", id: callId, toolCall: normalizeSdkToolCallForOpenCode(decoded.toolCall) };
 }
 
@@ -703,7 +750,78 @@ function normalizeSubagentTypeForOpenCode(value: string | undefined): string | u
   return aliases[trimmed] ?? trimmed;
 }
 
+function isCursorHostedSdkToolCall(toolCall: CursorToolCall): boolean {
+  const name = toolCall.name.toLowerCase();
+  return name === "websearch" || name === "webfetch";
+}
+
+function decodeCursorHostedToolResultText(toolCall: CursorToolCall, toolCallBytes: Uint8Array): string | null {
+  for (const field of decodeProtobufFields(toolCallBytes)) {
+    if (!(field.value instanceof Uint8Array)) continue;
+    const spec = TOOL_CALL_SPECS[field.no];
+    if (!spec) continue;
+    const toolFields = decodeProtobufFields(field.value);
+    const resultBytes = bytesField(toolFields, 2);
+    if (!resultBytes) return null;
+    switch (spec.argsKind) {
+      case "webSearch":
+        return formatWebSearchResult(toolCall.arguments ?? {}, resultBytes);
+      case "webFetch":
+      case "fetch":
+        return formatWebFetchResult(toolCall.arguments ?? {}, resultBytes);
+    }
+  }
+  return null;
+}
+
+function formatWebSearchResult(args: Record<string, unknown>, resultBytes: Uint8Array): string {
+  const query = stringArg(args, "query") || "unknown";
+  const fields = decodeProtobufFields(resultBytes);
+  const successBytes = bytesField(fields, 1);
+  if (successBytes) {
+    const references = repeatedMessageFields(decodeProtobufFields(successBytes), 1);
+    const lines = [`CURSOR WEB SEARCH RESULT (query: ${JSON.stringify(query)}):`];
+    if (!references.length) lines.push("- No references returned.");
+    for (const reference of references) {
+      const refFields = decodeProtobufFields(reference);
+      const title = stringField(refFields, 1) || "Untitled";
+      const url = stringField(refFields, 2) || "";
+      const chunk = stringField(refFields, 3) || "";
+      lines.push(`- ${title}${url ? ` (${url})` : ""}`);
+      if (chunk) lines.push(`  ${chunk}`);
+    }
+    return lines.join("\n");
+  }
+  const errorBytes = bytesField(fields, 2);
+  if (errorBytes) {
+    const error = stringField(decodeProtobufFields(errorBytes), 1) || "Web search failed";
+    return `CURSOR WEB SEARCH ERROR (query: ${JSON.stringify(query)}): ${error}`;
+  }
+  return `CURSOR WEB SEARCH RESULT (query: ${JSON.stringify(query)}): [rejected or empty]`;
+}
+
+function formatWebFetchResult(args: Record<string, unknown>, resultBytes: Uint8Array): string {
+  const requestedUrl = stringArg(args, "url") || "unknown";
+  const fields = decodeProtobufFields(resultBytes);
+  const successBytes = bytesField(fields, 1);
+  if (successBytes) {
+    const successFields = decodeProtobufFields(successBytes);
+    const url = stringField(successFields, 1) || requestedUrl;
+    const markdown = stringField(successFields, 2) || "";
+    return [`CURSOR WEB FETCH RESULT (url: ${JSON.stringify(url)}):`, markdown || "[empty body]"].join("\n");
+  }
+  const errorBytes = bytesField(fields, 2);
+  if (errorBytes) {
+    const errorFields = decodeProtobufFields(errorBytes);
+    const url = stringField(errorFields, 1) || requestedUrl;
+    const error = stringField(errorFields, 2) || "Web fetch failed";
+    return `CURSOR WEB FETCH ERROR (url: ${JSON.stringify(url)}): ${error}`;
+  }
+  return `CURSOR WEB FETCH RESULT (url: ${JSON.stringify(requestedUrl)}): [rejected or empty]`;
+}
+
 function isEmittableSdkToolCall(toolCall: CursorToolCall): boolean {
+  if (isCursorHostedSdkToolCall(toolCall)) return false;
   const name = toolCall.name.toLowerCase();
   const args = toolCall.arguments ?? {};
   if (name === "glob") return true;
@@ -724,8 +842,6 @@ function isEmittableSdkToolCall(toolCall: CursorToolCall): boolean {
   if (name === "task") {
     return hasStringArg(args, "description") && hasStringArg(args, "prompt") && hasStringArg(args, "subagent_type");
   }
-  if (name === "webfetch") return hasStringArg(args, "url");
-  if (name === "websearch") return hasStringArg(args, "query");
   if (name === "todowrite") {
     return Array.isArray(args.todos) && args.todos.some((item) => isRecord(item) && hasStringArg(item, "content"));
   }

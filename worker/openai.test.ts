@@ -227,6 +227,60 @@ describe("OpenAI compatibility adapter", () => {
     expect(prepared.prompt.text).not.toContain("No file-mutating tool call has been made yet");
   });
 
+  it("always adds Cursor-hosted websearch and webfetch to the SDK tool inventory", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5-fast",
+        messages: [{ role: "user", content: "Use web search for current frontend framework news." }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "bash",
+              description: "Run a shell command",
+              parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] }
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5-fast" }
+    );
+
+    expect(prepared.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["bash", "websearch", "webfetch"]));
+    expect(prepared.prompt.text).toContain('"name":"websearch"');
+    expect(prepared.prompt.text).toContain('"hosted_by":"cursor"');
+    expect(prepared.prompt.text).toContain("websearch and webfetch are always available in this harness");
+  });
+
+  it("does not duplicate Cursor-hosted tools when OpenCode already provides them", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5-fast",
+        messages: [{ role: "user", content: "fetch docs" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "websearch",
+              parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
+            }
+          },
+          {
+            type: "function",
+            function: {
+              name: "webfetch",
+              parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5-fast" }
+    );
+
+    expect(prepared.tools.filter((tool) => tool.name === "websearch")).toHaveLength(1);
+    expect(prepared.tools.filter((tool) => tool.name === "webfetch")).toHaveLength(1);
+  });
+
   it("converts Responses input arrays", () => {
     const prepared = prepareResponsesRequest(
       {

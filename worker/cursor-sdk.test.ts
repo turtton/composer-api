@@ -3,6 +3,57 @@ import { toOpenAiToolCalls } from "./openai";
 import { cursorSdkTestExports } from "./cursor-sdk";
 
 describe("Cursor SDK harness", () => {
+  it("enables Cursor web search and fetch in SDK request context", () => {
+    const encoded = cursorSdkTestExports.encodeAgentClientRequestContextResult({ id: 1, execId: "exec-1" });
+    const requestContext = decodeRequestContextFromExecClientMessage(encoded);
+    expect(varintField(requestContext, 17)).toBe(1);
+    expect(varintField(requestContext, 24)).toBe(1);
+    expect(varintField(requestContext, 35)).toBe(1);
+  });
+
+  it("decodes web search interaction queries from the SDK stream", () => {
+    const query = protoMessage([
+      protoVarintField(1, 42),
+      protoBytesField(2, protoMessage([protoBytesField(1, protoMessage([protoStringField(1, "Astro framework")]))]))
+    ]);
+    const frame = protoMessage([protoBytesField(7, query)]);
+    const events = cursorSdkTestExports.decodeLocalAgentServerFrame(frame);
+    expect(events).toEqual([{ type: "interaction_query", id: 42, kind: "websearch" }]);
+  });
+
+  it("decodes web fetch interaction queries from the SDK stream", () => {
+    const query = protoMessage([
+      protoVarintField(1, 7),
+      protoBytesField(9, protoMessage([protoBytesField(1, protoMessage([protoStringField(1, "https://example.com")]))]))
+    ]);
+    const frame = protoMessage([protoBytesField(7, query)]);
+    const events = cursorSdkTestExports.decodeLocalAgentServerFrame(frame);
+    expect(events).toEqual([{ type: "interaction_query", id: 7, kind: "webfetch" }]);
+  });
+
+  it("encodes an approved interaction response for websearch", () => {
+    const encoded = cursorSdkTestExports.encodeAgentClientInteractionResponseApproved({ id: 9, kind: "websearch" });
+    const top = decodeFields(encoded);
+    expect(top).toHaveLength(1);
+    expect(top[0].no).toBe(6);
+    const interactionResponse = decodeFields(top[0].value as Uint8Array);
+    expect(interactionResponse.find((field) => field.no === 1)?.value).toBe(9);
+    const responseWrapper = interactionResponse.find((field) => field.no === 2);
+    expect(responseWrapper?.value).toBeInstanceOf(Uint8Array);
+    const approvedField = decodeFields(responseWrapper!.value as Uint8Array).find((field) => field.no === 1);
+    expect(approvedField?.value).toBeInstanceOf(Uint8Array);
+    expect((approvedField!.value as Uint8Array).length).toBe(0);
+  });
+
+  it("encodes an approved interaction response for webfetch on field 9", () => {
+    const encoded = cursorSdkTestExports.encodeAgentClientInteractionResponseApproved({ id: 12, kind: "webfetch" });
+    const top = decodeFields(encoded);
+    const interactionResponse = decodeFields(top[0].value as Uint8Array);
+    expect(interactionResponse.find((field) => field.no === 1)?.value).toBe(12);
+    expect(interactionResponse.find((field) => field.no === 9)).toBeTruthy();
+    expect(interactionResponse.find((field) => field.no === 2)).toBeUndefined();
+  });
+
   it("does not emit incomplete SDK tool-call starts to OpenCode", () => {
     expect(cursorSdkTestExports.isEmittableSdkToolCall({ name: "edit", arguments: {} })).toBe(false);
     expect(cursorSdkTestExports.isEmittableSdkToolCall({ name: "write", arguments: { path: "package.json" } })).toBe(false);
@@ -147,17 +198,49 @@ describe("Cursor SDK harness", () => {
       encodeNamedToolCall(37, encodeWrappedToolArgs(protoMessage([protoStringField(1, "https://example.com/docs")])))
     );
     expect(webFetch?.toolCall).toEqual({ name: "webfetch", arguments: { url: "https://example.com/docs" } });
+    expect(cursorSdkTestExports.isCursorHostedSdkToolCall(webFetch!.toolCall)).toBe(true);
+    expect(cursorSdkTestExports.isEmittableSdkToolCall(webFetch!.toolCall)).toBe(false);
 
     const fetch = cursorSdkTestExports.decodeSdkToolCall(
       encodeNamedToolCall(24, encodeWrappedToolArgs(protoMessage([protoStringField(1, "https://example.com/api")])))
     );
     expect(fetch?.toolCall).toEqual({ name: "webfetch", arguments: { url: "https://example.com/api" } });
+    expect(cursorSdkTestExports.isEmittableSdkToolCall(fetch!.toolCall)).toBe(false);
 
     const webSearch = cursorSdkTestExports.decodeSdkToolCall(
       encodeNamedToolCall(18, encodeWrappedToolArgs(protoMessage([protoStringField(1, "opencode task tool")])))
     );
     expect(webSearch?.toolCall).toEqual({ name: "websearch", arguments: { query: "opencode task tool" } });
-    expect(cursorSdkTestExports.isEmittableSdkToolCall(webSearch!.toolCall)).toBe(true);
+    expect(cursorSdkTestExports.isCursorHostedSdkToolCall(webSearch!.toolCall)).toBe(true);
+    expect(cursorSdkTestExports.isEmittableSdkToolCall(webSearch!.toolCall)).toBe(false);
+  });
+
+  it("injects completed Cursor web search results as assistant text", () => {
+    const reference = protoMessage([
+      protoStringField(1, "OpenCode docs"),
+      protoStringField(2, "https://opencode.ai/docs"),
+      protoStringField(3, "OpenCode is an open source coding agent.")
+    ]);
+    const success = protoMessage([protoBytesField(1, reference)]);
+    const result = protoMessage([protoBytesField(1, success)]);
+    const args = protoMessage([protoStringField(1, "opencode docs")]);
+    const inner = protoMessage([protoBytesField(1, args), protoBytesField(2, result)]);
+    const toolCall = protoMessage([protoBytesField(18, inner)]);
+    const update = protoMessage([protoStringField(1, "call_web_1"), protoBytesField(2, toolCall)]);
+    const interaction = protoMessage([protoBytesField(3, update)]);
+    const frame = protoMessage([protoBytesField(1, interaction)]);
+
+    const events = cursorSdkTestExports.decodeLocalAgentServerFrame(frame);
+    expect(events).toEqual([
+      {
+        type: "text",
+        text: [
+          'CURSOR WEB SEARCH RESULT (query: "opencode docs"):',
+          "- OpenCode docs (https://opencode.ai/docs)",
+          "  OpenCode is an open source coding agent."
+        ].join("\n")
+      }
+    ]);
   });
 
   it("decodes Cursor todo and question tool calls for OpenCode", () => {
@@ -214,6 +297,64 @@ describe("Cursor SDK harness", () => {
     expect(cursorSdkTestExports.isEmittableSdkToolCall(question!.toolCall)).toBe(true);
   });
 });
+
+function decodeRequestContextFromExecClientMessage(encoded: Uint8Array): Array<{ no: number; wt: number; value: unknown }> {
+  const execClient = decodeProtobufFields(encoded).find((field) => field.no === 2)?.value;
+  if (!(execClient instanceof Uint8Array)) throw new Error("missing exec client message");
+  const result = decodeProtobufFields(execClient).find((field) => field.no === 10)?.value;
+  if (!(result instanceof Uint8Array)) throw new Error("missing exec result");
+  const success = decodeProtobufFields(result).find((field) => field.no === 1)?.value;
+  if (!(success instanceof Uint8Array)) throw new Error("missing success");
+  const requestContext = decodeProtobufFields(success).find((field) => field.no === 1)?.value;
+  if (!(requestContext instanceof Uint8Array)) throw new Error("missing request context");
+  return decodeProtobufFields(requestContext);
+}
+
+function varintField(fields: Array<{ no: number; wt: number; value: unknown }>, fieldNumber: number): number | undefined {
+  const field = fields.find((item) => item.no === fieldNumber);
+  return typeof field?.value === "number" ? field.value : undefined;
+}
+
+function decodeFields(bytes: Uint8Array): Array<{ no: number; wt: number; value: unknown }> {
+  return decodeProtobufFields(bytes);
+}
+
+function decodeProtobufFields(bytes: Uint8Array): Array<{ no: number; wt: number; value: unknown }> {
+  const fields: Array<{ no: number; wt: number; value: unknown }> = [];
+  let offset = 0;
+  while (offset < bytes.length) {
+    const key = readVarint(bytes, offset);
+    offset = key.offset;
+    const fieldNumber = key.value >> 3;
+    const wireType = key.value & 7;
+    if (wireType === 0) {
+      const value = readVarint(bytes, offset);
+      offset = value.offset;
+      fields.push({ no: fieldNumber, wt: wireType, value: value.value });
+    } else if (wireType === 2) {
+      const length = readVarint(bytes, offset);
+      offset = length.offset;
+      const value = bytes.subarray(offset, offset + length.value);
+      offset += length.value;
+      fields.push({ no: fieldNumber, wt: wireType, value });
+    } else {
+      break;
+    }
+  }
+  return fields;
+}
+
+function readVarint(bytes: Uint8Array, offset: number): { value: number; offset: number } {
+  let value = 0;
+  let shift = 0;
+  while (offset < bytes.length) {
+    const byte = bytes[offset++];
+    value |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) break;
+    shift += 7;
+  }
+  return { value, offset };
+}
 
 function encodeNamedToolCall(fieldNumber: number, toolCall: Uint8Array): Uint8Array {
   return protoMessage([protoBytesField(fieldNumber, toolCall)]);
