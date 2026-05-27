@@ -29,8 +29,10 @@ type LocalSdkDecodedEvent =
   | { type: "ignore" };
 
 type ArgsKind =
+  | "askQuestion"
   | "delete"
   | "edit"
+  | "fetch"
   | "glob"
   | "grep"
   | "ls"
@@ -41,6 +43,9 @@ type ArgsKind =
   | "semSearch"
   | "shell"
   | "task"
+  | "updateTodos"
+  | "webFetch"
+  | "webSearch"
   | "write";
 
 interface ToolSpec {
@@ -60,12 +65,17 @@ const TOOL_CALL_SPECS: Record<number, ToolSpec> = {
   4: { name: "glob", argsKind: "glob" },
   5: { name: "grep", argsKind: "grep" },
   8: { name: "read", argsKind: "readTool" },
+  9: { name: "todowrite", argsKind: "updateTodos" },
   12: { name: "edit", argsKind: "edit" },
   13: { name: "ls", argsKind: "ls" },
   14: { name: "readLints", argsKind: "readLints" },
   15: { name: "mcp", argsKind: "mcp" },
   16: { name: "semSearch", argsKind: "semSearch" },
-  19: { name: "task", argsKind: "task" }
+  18: { name: "websearch", argsKind: "webSearch" },
+  19: { name: "task", argsKind: "task" },
+  23: { name: "question", argsKind: "askQuestion" },
+  24: { name: "webfetch", argsKind: "fetch" },
+  37: { name: "webfetch", argsKind: "webFetch" }
 };
 
 const EXEC_TOOL_SPECS: Record<number, ToolSpec> = {
@@ -583,7 +593,67 @@ function decodeToolArgs(kind: ArgsKind, payload: Uint8Array): Record<string, unk
         subagent_type: normalizeSubagentTypeForOpenCode(decodeSubagentType(bytesField(fields, 3))),
         task_id: stringField(fields, 5)
       });
+    case "webFetch":
+    case "fetch":
+      return compactRecord({ url: stringField(fields, 1) });
+    case "webSearch":
+      return compactRecord({ query: stringField(fields, 1) });
+    case "updateTodos":
+      return compactRecord({
+        todos: repeatedMessageFields(fields, 1).map(decodeTodoItem).filter((item) => hasStringArg(item, "content"))
+      });
+    case "askQuestion":
+      return compactRecord({
+        questions: repeatedMessageFields(fields, 2).map(decodeAskQuestionItem).filter((item) => hasStringArg(item, "question"))
+      });
   }
+}
+
+function decodeTodoItem(payload: Uint8Array): Record<string, unknown> {
+  const fields = decodeProtobufFields(payload);
+  return compactRecord({
+    content: stringField(fields, 2) || stringField(fields, 1),
+    status: mapTodoStatus(numberField(fields, 3)),
+    priority: "medium"
+  });
+}
+
+function mapTodoStatus(value: number | undefined): string {
+  switch (value) {
+    case 2:
+      return "in_progress";
+    case 3:
+      return "completed";
+    case 4:
+      return "cancelled";
+    default:
+      return "pending";
+  }
+}
+
+function decodeAskQuestionItem(payload: Uint8Array): Record<string, unknown> {
+  const fields = decodeProtobufFields(payload);
+  const prompt = stringField(fields, 2) || "";
+  const id = stringField(fields, 1) || "";
+  const options = repeatedMessageFields(fields, 3).map(decodeAskQuestionOption);
+  return compactRecord({
+    question: prompt,
+    header: truncateHeader(id || prompt),
+    ...(options.length ? { options } : {}),
+    ...(booleanField(fields, 4) ? { multiple: true } : {})
+  });
+}
+
+function decodeAskQuestionOption(payload: Uint8Array): Record<string, unknown> {
+  const fields = decodeProtobufFields(payload);
+  const label = stringField(fields, 2) || stringField(fields, 1) || "";
+  return { label, description: label };
+}
+
+function truncateHeader(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= 30) return trimmed;
+  return trimmed.slice(0, 30);
 }
 
 function decodeSubagentType(payload: Uint8Array | undefined): string | undefined {
@@ -653,6 +723,17 @@ function isEmittableSdkToolCall(toolCall: CursorToolCall): boolean {
   if (name === "mcp") return hasStringArg(args, "toolName") || hasStringArg(args, "providerIdentifier");
   if (name === "task") {
     return hasStringArg(args, "description") && hasStringArg(args, "prompt") && hasStringArg(args, "subagent_type");
+  }
+  if (name === "webfetch") return hasStringArg(args, "url");
+  if (name === "websearch") return hasStringArg(args, "query");
+  if (name === "todowrite") {
+    return Array.isArray(args.todos) && args.todos.some((item) => isRecord(item) && hasStringArg(item, "content"));
+  }
+  if (name === "question") {
+    return (
+      Array.isArray(args.questions) &&
+      args.questions.some((item) => isRecord(item) && hasStringArg(item, "question") && hasStringArg(item, "header"))
+    );
   }
   return Object.keys(args).length > 0;
 }
@@ -859,6 +940,12 @@ function stringFields(fields: ProtobufField[], fieldNumber: number): string[] | 
     .filter((item) => item.no === fieldNumber && item.value instanceof Uint8Array)
     .map((item) => decodeUtf8(item.value as Uint8Array));
   return values.length ? values : undefined;
+}
+
+function repeatedMessageFields(fields: ProtobufField[], fieldNumber: number): Uint8Array[] {
+  return fields
+    .filter((item) => item.no === fieldNumber && item.value instanceof Uint8Array)
+    .map((item) => item.value as Uint8Array);
 }
 
 function numberField(fields: ProtobufField[], fieldNumber: number): number | undefined {

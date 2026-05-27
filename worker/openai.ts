@@ -920,6 +920,18 @@ function openCodeArgsToSdkArgs(toolName: string, args: Record<string, unknown>):
       task_id: firstStringArg(args, "task_id", "taskId", "resume")
     });
   }
+  if (["webfetch", "fetch", "web"].includes(normalized)) {
+    return compactRecord({ url: firstStringArg(args, "url", "uri", "href") });
+  }
+  if (normalized === "websearch") {
+    return compactRecord({ query: firstStringArg(args, "query", "searchTerm", "search_term", "q") });
+  }
+  if (["todowrite", "todo"].includes(normalized)) {
+    return compactRecord({ todos: args.todos });
+  }
+  if (["question", "askquestion"].includes(normalized)) {
+    return compactRecord({ questions: args.questions });
+  }
   return args;
 }
 
@@ -1459,6 +1471,11 @@ function toolSpecificArgumentAliases(tool: string, normalized: string): Array<{ 
       return [{ candidates: ["subagent_type", "subagentType", "agent"], priority: 90 }];
     }
   }
+  if (tool === "websearch") {
+    if (["searchterm", "search", "q", "query"].includes(normalized)) {
+      return [{ candidates: ["query", "searchTerm", "search_term"], priority: 95 }];
+    }
+  }
   return [];
 }
 
@@ -1479,7 +1496,14 @@ function toolNameAliases(normalized: string): string[] {
     terminal: ["bash", "shell"],
     ls: ["list"],
     list: ["ls"],
-    writefile: ["write"]
+    writefile: ["write"],
+    fetch: ["webfetch"],
+    web: ["webfetch"],
+    webfetchtoolcall: ["webfetch"],
+    websearchtoolcall: ["websearch"],
+    searchterm: ["websearch"],
+    updatetodos: ["todowrite"],
+    askquestion: ["question"]
   };
   return aliases[normalized] ?? [];
 }

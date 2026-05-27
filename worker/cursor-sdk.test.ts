@@ -141,10 +141,90 @@ describe("Cursor SDK harness", () => {
       subagent_type: "explore"
     });
   });
+
+  it("decodes Cursor web fetch and search tool calls for OpenCode", () => {
+    const webFetch = cursorSdkTestExports.decodeSdkToolCall(
+      encodeNamedToolCall(37, encodeWrappedToolArgs(protoMessage([protoStringField(1, "https://example.com/docs")])))
+    );
+    expect(webFetch?.toolCall).toEqual({ name: "webfetch", arguments: { url: "https://example.com/docs" } });
+
+    const fetch = cursorSdkTestExports.decodeSdkToolCall(
+      encodeNamedToolCall(24, encodeWrappedToolArgs(protoMessage([protoStringField(1, "https://example.com/api")])))
+    );
+    expect(fetch?.toolCall).toEqual({ name: "webfetch", arguments: { url: "https://example.com/api" } });
+
+    const webSearch = cursorSdkTestExports.decodeSdkToolCall(
+      encodeNamedToolCall(18, encodeWrappedToolArgs(protoMessage([protoStringField(1, "opencode task tool")])))
+    );
+    expect(webSearch?.toolCall).toEqual({ name: "websearch", arguments: { query: "opencode task tool" } });
+    expect(cursorSdkTestExports.isEmittableSdkToolCall(webSearch!.toolCall)).toBe(true);
+  });
+
+  it("decodes Cursor todo and question tool calls for OpenCode", () => {
+    const todos = cursorSdkTestExports.decodeSdkToolCall(
+      encodeNamedToolCall(
+        9,
+        encodeWrappedToolArgs(
+          protoMessage([
+            protoBytesField(
+              1,
+              protoMessage([protoStringField(1, "todo-1"), protoStringField(2, "Ship feature"), protoVarintField(3, 2)])
+            )
+          ])
+        )
+      )
+    );
+    expect(todos?.toolCall).toEqual({
+      name: "todowrite",
+      arguments: {
+        todos: [{ content: "Ship feature", status: "in_progress", priority: "medium" }]
+      }
+    });
+
+    const question = cursorSdkTestExports.decodeSdkToolCall(
+      encodeNamedToolCall(
+        23,
+        encodeWrappedToolArgs(
+          protoMessage([
+            protoBytesField(
+              2,
+              protoMessage([
+                protoStringField(1, "db-choice"),
+                protoStringField(2, "Which database should we use?"),
+                protoBytesField(3, protoMessage([protoStringField(1, "postgres"), protoStringField(2, "PostgreSQL")])),
+                protoVarintField(4, 0)
+              ])
+            )
+          ])
+        )
+      )
+    );
+    expect(question?.toolCall).toEqual({
+      name: "question",
+      arguments: {
+        questions: [
+          {
+            question: "Which database should we use?",
+            header: "db-choice",
+            options: [{ label: "PostgreSQL", description: "PostgreSQL" }]
+          }
+        ]
+      }
+    });
+    expect(cursorSdkTestExports.isEmittableSdkToolCall(question!.toolCall)).toBe(true);
+  });
 });
 
+function encodeNamedToolCall(fieldNumber: number, toolCall: Uint8Array): Uint8Array {
+  return protoMessage([protoBytesField(fieldNumber, toolCall)]);
+}
+
+function encodeWrappedToolArgs(args: Uint8Array): Uint8Array {
+  return protoMessage([protoBytesField(1, args)]);
+}
+
 function encodeToolCall(input: { taskToolCall: Uint8Array }): Uint8Array {
-  return protoMessage([protoBytesField(19, input.taskToolCall)]);
+  return encodeNamedToolCall(19, input.taskToolCall);
 }
 
 function encodeTaskToolCall(args: Uint8Array): Uint8Array {
@@ -188,6 +268,10 @@ function protoStringField(fieldNumber: number, value: string): Uint8Array {
 
 function protoBytesField(fieldNumber: number, value: Uint8Array): Uint8Array {
   return protoMessage([varint((fieldNumber << 3) | 2), varint(value.length), value]);
+}
+
+function protoVarintField(fieldNumber: number, value: number): Uint8Array {
+  return protoMessage([varint(fieldNumber << 3), varint(value)]);
 }
 
 function varint(value: number): Uint8Array {
