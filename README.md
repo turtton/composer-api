@@ -188,6 +188,30 @@ pnpm opencode:run -- run "your prompt" --model cursor-api/composer-2.5-fast
 OPENCODE_RUN_TIMEOUT_MS=180000 pnpm test:opencode
 ```
 
+## Running with Docker Compose
+
+A `Dockerfile` and `docker-compose.yml` are provided to run the server detached
+in the background. The container binds to `0.0.0.0:8787` inside the container
+and maps to `${COMPOSER_API_HOST_PORT:-8787}` on the host.
+
+```bash
+cp .env.example .env   # fill in CURSOR_BACKEND_BASE_URL, CURSOR_LOCAL_AGENT_ENDPOINT
+docker compose up -d --build
+docker compose logs -f composer-api   # tail logs
+docker compose ps                     # show status / health
+docker compose down                   # stop and remove
+```
+
+The compose file overrides `COMPOSER_API_HOST=0.0.0.0` so the container is
+reachable through the published port. To use a different host port:
+
+```bash
+COMPOSER_API_HOST_PORT=18787 docker compose up -d
+```
+
+The container exposes `/health` for the built-in healthcheck. Point OpenCode at
+`http://127.0.0.1:8787/opencodev2/v1` (or your mapped port).
+
 ## Development
 
 ```bash

@@ -1,0 +1,16 @@
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.dev.vars
+.wrangler
+sample-projects
+*.log
+.DS_Store
+Dockerfile
+docker-compose.yml
+.dockerignore
+README.md
