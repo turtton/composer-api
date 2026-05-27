@@ -2,8 +2,8 @@
   "name": "composer-api",
   "version": "0.1.0",
   "private": false,
-  "type": "module",
-  "description": "OpenAI-compatible Chat Completions and Responses API proxy for Cursor Composer.",
+  "packageManager": "pnpm@10.12.1",
+  "description": "Local OpenCode-compatible API proxy for Cursor Composer.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/standardagents/composer-api.git"
@@ -13,38 +13,24 @@
     "url": "https://github.com/standardagents/composer-api/issues"
   },
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
-    "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0",
-    "sdk:opencode-bridge": "node scripts/cursor-sdk-opencode-bridge.mjs",
-    "sdk:responses": "node scripts/cursor-sdk-responses-proxy.mjs",
+    "start": "tsx scripts/opencode-local-server.ts",
+    "dev": "tsx scripts/opencode-local-server.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
-    "deploy": "vite build && wrangler deploy",
-    "db:migrate:local": "wrangler d1 migrations apply composer-api --local",
-    "db:migrate:remote": "wrangler d1 migrations apply composer-api --remote"
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "cursor",
     "composer",
+    "opencode",
     "openai",
-    "chat-completions",
-    "responses-api",
-    "cloudflare-workers"
+    "chat-completions"
   ],
   "license": "MIT",
-  "dependencies": {
-    "@cloudflare/containers": "^0.3.4",
-    "@cursor/sdk": "^1.0.13",
-    "lucide": "^0.557.0"
-  },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.37.2",
-    "@cloudflare/workers-types": "^4.20260520.0",
+    "@types/node": "^24.0.3",
+    "tsx": "^4.20.3",
     "typescript": "^5.9.3",
-    "vite": "^8.0.13",
-    "vitest": "^4.0.15",
-    "wrangler": "^4.93.0"
+    "vitest": "^4.0.15"
   }
 }

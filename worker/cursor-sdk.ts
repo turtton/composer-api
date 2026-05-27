@@ -88,13 +88,12 @@ export async function createCursorSdkCompletion(
   const now = deps.now();
   pruneSessions(now.getTime());
   const sessionIdentity = await sdkSessionIdentity(apiKey, input.sessionKey || "default", input.sessionOwnerKey);
-  const session = sdkSessions.get(sessionIdentity.id) ?? (await readPersistedSdkSession(env, sessionIdentity.id, now.getTime()));
+  const session = sdkSessions.get(sessionIdentity.id);
   const agentId = session?.agentId || newLocalSdkAgentId(deps.randomUUID());
   const runId = newLocalSdkRunId(deps.randomUUID());
   const updatedAt = deps.now();
 
   sdkSessions.set(sessionIdentity.id, { agentId, updatedAt: updatedAt.getTime() });
-  await savePersistedSdkSession(env, sessionIdentity, agentId, updatedAt);
 
   return {
     agentId,
@@ -152,17 +151,14 @@ async function* streamCursorLocalSdkRun(
     })
   );
   const runAbort = new AbortController();
-  const bridgeBinding = env.CURSOR_SDK_BRIDGE_CONTAINER;
   const bridgeUrl = env.CURSOR_SDK_BRIDGE_URL?.trim();
-  const useBridge = Boolean(bridgeBinding || bridgeUrl);
+  const useBridge = Boolean(bridgeUrl);
   const upload = useBridge ? undefined : new TransformStream<Uint8Array, Uint8Array>();
   const uploadWriter = upload?.writable.getWriter();
   const runResponsePromise = (
-    bridgeBinding
-      ? cursorLocalSdkContainerBridgeRaw(env, bridgeBinding, accessToken, requestId, requestBody, runAbort.signal)
-      : bridgeUrl
-        ? cursorLocalSdkUrlBridgeRaw(env, deps, bridgeUrl, accessToken, requestId, requestBody, runAbort.signal)
-        : cursorLocalSdkRaw(env, deps, cursorLocalSdkEndpoint(env), accessToken, requestId, upload!.readable, runAbort.signal)
+    bridgeUrl
+      ? cursorLocalSdkUrlBridgeRaw(env, deps, bridgeUrl, accessToken, requestId, requestBody, runAbort.signal)
+      : cursorLocalSdkRaw(env, deps, cursorLocalSdkEndpoint(env), accessToken, requestId, upload!.readable, runAbort.signal)
   ).then((response) => ({
     source: "run" as const,
     response
@@ -257,25 +253,6 @@ async function cursorLocalSdkUrlBridgeRaw(
   signal?: AbortSignal
 ): Promise<Response> {
   const response = await deps.fetch(bridgeUrl, {
-    method: "POST",
-    headers: cursorLocalSdkBridgeHeaders(env),
-    signal,
-    body: JSON.stringify(cursorLocalSdkBridgePayload(env, accessToken, requestId, runFrame))
-  });
-  return assertCursorLocalSdkBridgeResponse(response);
-}
-
-async function cursorLocalSdkContainerBridgeRaw(
-  env: Env,
-  bridgeBinding: DurableObjectNamespace,
-  accessToken: string,
-  requestId: string,
-  runFrame: Uint8Array,
-  signal?: AbortSignal
-): Promise<Response> {
-  const bridgeId = bridgeBinding.idFromName("shared");
-  const bridge = bridgeBinding.get(bridgeId);
-  const response = await bridge.fetch("http://cursor-sdk-bridge.local/sdk", {
     method: "POST",
     headers: cursorLocalSdkBridgeHeaders(env),
     signal,
@@ -382,7 +359,7 @@ function encodeAgentClientRunRequest(input: { agentId: string; messageId: string
 
 function encodeAgentClientRequestContextResult(input: { id: number; execId?: string }): Uint8Array {
   const env = protoMessage([
-    protoStringField(1, "Cloudflare Worker"),
+    protoStringField(1, "OpenCode local server"),
     protoStringField(2, "."),
     protoStringField(3, "sh"),
     protoVarintField(5, false),
@@ -671,55 +648,6 @@ function newLocalSdkAgentId(uuid: string): string {
 
 function newLocalSdkRunId(uuid: string): string {
   return uuid.startsWith("run-") ? uuid : `run-${uuid}`;
-}
-
-async function readPersistedSdkSession(env: Env, id: string, now: number): Promise<CursorSdkSession | undefined> {
-  try {
-    const row = await env.DB.prepare(`SELECT agent_id, updated_at FROM sdk_sessions WHERE id = ? LIMIT 1`)
-      .bind(id)
-      .first<{ agent_id: string; updated_at: string }>();
-    if (!row?.agent_id) return undefined;
-    const updatedAt = Date.parse(row.updated_at);
-    if (!Number.isFinite(updatedAt) || updatedAt + SDK_SESSION_TTL_MS < now) {
-      await deletePersistedSdkSession(env, id);
-      return undefined;
-    }
-    const session = { agentId: row.agent_id, updatedAt };
-    sdkSessions.set(id, session);
-    return session;
-  } catch {
-    return undefined;
-  }
-}
-
-async function savePersistedSdkSession(
-  env: Env,
-  identity: { id: string; ownerHash: string; sessionHash: string },
-  agentId: string,
-  updatedAt: Date
-): Promise<void> {
-  try {
-    const timestamp = updatedAt.toISOString();
-    await env.DB.prepare(
-      `INSERT INTO sdk_sessions (id, owner_hash, session_hash, agent_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         agent_id = excluded.agent_id,
-         updated_at = excluded.updated_at`
-    )
-      .bind(identity.id, identity.ownerHash, identity.sessionHash, agentId, timestamp, timestamp)
-      .run();
-  } catch {
-    // D1 persistence is best-effort so local development without migrations still works.
-  }
-}
-
-async function deletePersistedSdkSession(env: Env, id: string): Promise<void> {
-  try {
-    await env.DB.prepare(`DELETE FROM sdk_sessions WHERE id = ?`).bind(id).run();
-  } catch {
-    // Ignore missing table or transient persistence failures.
-  }
 }
 
 function protoMessage(parts: Uint8Array[]): Uint8Array {

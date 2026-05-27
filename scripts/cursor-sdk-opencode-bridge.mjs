@@ -24,25 +24,19 @@ const requestTimeoutMs = parseInteger(process.env.CURSOR_SDK_BRIDGE_REQUEST_TIME
 const http2SessionIdleMs = parseInteger(process.env.CURSOR_SDK_BRIDGE_HTTP2_IDLE_MS, 5 * 60 * 1000);
 const http2SessionPool = new Map();
 
-const server = http.createServer((request, response) => {
-  handleRequest(request, response).catch((error) => {
-    if (!response.headersSent) {
-      writeJson(response, openAiError(error), statusFromError(error));
-      return;
-    }
-    response.destroy(error instanceof Error ? error : new Error(String(error)));
-  });
-});
+export function loadLocalEnvFiles() {
+  loadEnvFile(path.join(repoRoot, ".env"));
+  loadEnvFile(path.join(process.cwd(), ".env"));
+}
 
-server.listen(port, host, () => {
-  console.log(`Cursor SDK OpenCode bridge listening on http://${host}:${port}/sdk`);
-});
+export function closeBridgeHttp2Clients() {
+  closeAllHttp2Clients();
+}
 
-process.on("SIGINT", () => closeAndExit(0));
-process.on("SIGTERM", () => closeAndExit(0));
-
-async function handleRequest(request, response) {
-  const url = new URL(request.url || "/", `http://${request.headers.host || `${host}:${port}`}`);
+export async function handleBridgeHttpRequest(request, response, options = {}) {
+  const requestHost = options.host || host;
+  const requestPort = options.port || port;
+  const url = new URL(request.url || "/", `http://${request.headers.host || `${requestHost}:${requestPort}`}`);
 
   if (request.method === "GET" && url.pathname === "/health") {
     writeJson(response, { ok: true });
@@ -81,6 +75,27 @@ async function handleRequest(request, response) {
     clientVersion,
     runFrame
   });
+}
+
+const isMainModule = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+
+if (isMainModule) {
+  const server = http.createServer((request, response) => {
+    handleBridgeHttpRequest(request, response).catch((error) => {
+      if (!response.headersSent) {
+        writeJson(response, openAiError(error), statusFromError(error));
+        return;
+      }
+      response.destroy(error instanceof Error ? error : new Error(String(error)));
+    });
+  });
+
+  server.listen(port, host, () => {
+    console.log(`Cursor SDK OpenCode bridge listening on http://${host}:${port}/sdk`);
+  });
+
+  process.on("SIGINT", () => closeAndExit(server, 0));
+  process.on("SIGTERM", () => closeAndExit(server, 0));
 }
 
 async function proxySdkRun(response, input) {
@@ -461,7 +476,7 @@ function loadEnvFile(file) {
   }
 }
 
-function closeAndExit(code) {
+function closeAndExit(server, code) {
   closeAllHttp2Clients();
   server.close(() => process.exit(code));
   setTimeout(() => process.exit(code), 2000).unref();

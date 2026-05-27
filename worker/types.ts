@@ -1,8 +1,8 @@
+export interface RouteContext {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
 export interface Env {
-  ASSETS: Fetcher;
-  DB: D1Database;
-  CURSOR_SDK_BRIDGE_CONTAINER?: DurableObjectNamespace;
-  ENCRYPTION_KEY?: string;
   CURSOR_API_BASE?: string;
   CURSOR_BACKEND_BASE_URL?: string;
   CURSOR_CHAT_ENDPOINT?: string;
@@ -11,8 +11,6 @@ export interface Env {
   CURSOR_SDK_BRIDGE_TOKEN?: string;
   CURSOR_SDK_BRIDGE_URL?: string;
   CURSOR_SDK_CLIENT_VERSION?: string;
-  WAITLIST_API_TOKEN?: string;
-  WAITLIST_SOURCE?: string;
 }
 
 export interface Deps {
@@ -28,36 +26,6 @@ export interface CursorMe {
   userFirstName?: string;
   userLastName?: string;
   createdAt: string;
-}
-
-export interface AccountRow {
-  id: string;
-  cursor_user_id: string | null;
-  cursor_email: string | null;
-  cursor_name: string | null;
-  cursor_api_key_ciphertext: string;
-  cursor_api_key_iv: string;
-  cursor_api_key_hint: string | null;
-  waitlist_opt_in: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface ApiKeyRow {
-  id: string;
-  account_id: string;
-  prefix: string;
-  key_hash: string;
-  name: string;
-  created_at: string;
-  last_used_at: string | null;
-  revoked_at: string | null;
-}
-
-export interface AuthenticatedAccount {
-  account: AccountRow;
-  apiKey: ApiKeyRow;
-  cursorApiKey: string;
 }
 
 export type CursorImage =
