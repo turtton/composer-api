@@ -11,6 +11,9 @@ export interface Env {
   CURSOR_SDK_BRIDGE_TOKEN?: string;
   CURSOR_SDK_BRIDGE_URL?: string;
   CURSOR_SDK_CLIENT_VERSION?: string;
+  CURSOR_SDK_RUN_TIMEOUT_MS?: string;
+  CURSOR_SDK_STREAM_IDLE_TIMEOUT_MS?: string;
+  CURSOR_SDK_STREAM_START_TIMEOUT_MS?: string;
 }
 
 export interface Deps {

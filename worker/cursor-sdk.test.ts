@@ -11,6 +11,19 @@ describe("Cursor SDK harness", () => {
     expect(varintField(requestContext, 35)).toBe(1);
   });
 
+  it("times out when the SDK stream goes idle", async () => {
+    const stream = new ReadableStream<Uint8Array>();
+    const iterator = cursorSdkTestExports.parseConnectProtoFrames(stream, { idleTimeoutMs: 50 });
+    await expect(async () => {
+      for await (const _frame of iterator) {
+        // no frames expected
+      }
+    }).rejects.toMatchObject({
+      status: 504,
+      code: "cursor_sdk_stream_idle_timeout"
+    });
+  });
+
   it("decodes web search interaction queries from the SDK stream", () => {
     const query = protoMessage([
       protoVarintField(1, 42),
@@ -52,6 +65,16 @@ describe("Cursor SDK harness", () => {
     expect(interactionResponse.find((field) => field.no === 1)?.value).toBe(12);
     expect(interactionResponse.find((field) => field.no === 9)).toBeTruthy();
     expect(interactionResponse.find((field) => field.no === 2)).toBeUndefined();
+  });
+
+  it("parses SDK timeout env values", () => {
+    expect(cursorSdkTestExports.sdkTimeoutMsFromEnv({}, "CURSOR_SDK_RUN_TIMEOUT_MS", 120_000)).toBe(120_000);
+    expect(
+      cursorSdkTestExports.sdkTimeoutMsFromEnv({ CURSOR_SDK_RUN_TIMEOUT_MS: "90000" }, "CURSOR_SDK_RUN_TIMEOUT_MS", 120_000)
+    ).toBe(90_000);
+    expect(
+      cursorSdkTestExports.sdkTimeoutMsFromEnv({ CURSOR_SDK_RUN_TIMEOUT_MS: "invalid" }, "CURSOR_SDK_RUN_TIMEOUT_MS", 120_000)
+    ).toBe(120_000);
   });
 
   it("does not emit incomplete SDK tool-call starts to OpenCode", () => {

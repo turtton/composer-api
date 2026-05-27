@@ -65,7 +65,9 @@ const sdkSessions = new Map<string, CursorSdkSession>();
 const SDK_SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 const AGENT_MODE_AGENT = 1;
 const DEFAULT_SDK_CLIENT_VERSION = "sdk-1.0.13";
-const SDK_STREAM_START_TIMEOUT_MS = 25_000;
+const DEFAULT_SDK_STREAM_START_TIMEOUT_MS = 25_000;
+const DEFAULT_SDK_RUN_TIMEOUT_MS = 120_000;
+const DEFAULT_SDK_STREAM_IDLE_TIMEOUT_MS = 60_000;
 
 const TOOL_CALL_SPECS: Record<number, ToolSpec> = {
   1: { name: "shell", argsKind: "shell" },
@@ -154,7 +156,9 @@ export const cursorSdkTestExports = {
   encodeAgentClientRunRequest,
   isCursorHostedSdkToolCall,
   isEmittableSdkToolCall,
-  normalizeSdkToolCallForOpenCode
+  normalizeSdkToolCallForOpenCode,
+  parseConnectProtoFrames,
+  sdkTimeoutMsFromEnv
 };
 
 async function* streamCursorLocalSdkRun(
@@ -176,6 +180,12 @@ async function* streamCursorLocalSdkRun(
     })
   );
   const runAbort = new AbortController();
+  const startTimeoutMs = sdkTimeoutMsFromEnv(env, "CURSOR_SDK_STREAM_START_TIMEOUT_MS", DEFAULT_SDK_STREAM_START_TIMEOUT_MS);
+  const runTimeoutMs = sdkTimeoutMsFromEnv(env, "CURSOR_SDK_RUN_TIMEOUT_MS", DEFAULT_SDK_RUN_TIMEOUT_MS);
+  const idleTimeoutMs = sdkTimeoutMsFromEnv(env, "CURSOR_SDK_STREAM_IDLE_TIMEOUT_MS", DEFAULT_SDK_STREAM_IDLE_TIMEOUT_MS);
+  const runTimer = setTimeout(() => {
+    runAbort.abort("cursor_sdk_run_timeout");
+  }, runTimeoutMs);
   const bridgeUrl = env.CURSOR_SDK_BRIDGE_URL?.trim();
   const useBridge = Boolean(bridgeUrl);
   const upload = useBridge ? undefined : new TransformStream<Uint8Array, Uint8Array>();
@@ -194,11 +204,11 @@ async function* streamCursorLocalSdkRun(
     uploadOpen = true;
   }
 
-  const selected = await withSdkStartTimeout(runResponsePromise);
+  const selected = await withSdkStartTimeout(runResponsePromise, startTimeoutMs);
   const response = selected.response;
 
   try {
-    for await (const frame of parseConnectProtoFrames(response.body)) {
+    for await (const frame of parseConnectProtoFrames(response.body, { idleTimeoutMs, signal: runAbort.signal })) {
       for (const event of decodeLocalAgentServerFrame(frame)) {
         if (event.type === "text" && event.text) {
           text += event.text;
@@ -229,6 +239,7 @@ async function* streamCursorLocalSdkRun(
       }
     }
   } finally {
+    clearTimeout(runTimer);
     if (uploadOpen && uploadWriter) await closeSdkUpload(uploadWriter);
     runAbort.abort("opencode_sdk_run_finished");
   }
@@ -335,11 +346,11 @@ async function closeSdkUpload(writer: WritableStreamDefaultWriter<Uint8Array>): 
   writer.releaseLock();
 }
 
-function withSdkStartTimeout<T>(promise: Promise<T>): Promise<T> {
+function withSdkStartTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new HttpError("Cursor local SDK stream did not start.", 504, "cursor_sdk_stream_timeout"));
-    }, SDK_STREAM_START_TIMEOUT_MS);
+    }, timeoutMs);
     promise.then(
       (value) => {
         clearTimeout(timer);
@@ -350,6 +361,65 @@ function withSdkStartTimeout<T>(promise: Promise<T>): Promise<T> {
         reject(error);
       }
     );
+  });
+}
+
+function sdkTimeoutMsFromEnv(env: Env, key: keyof Env, fallback: number): number {
+  const raw = env[key];
+  if (typeof raw !== "string" || !raw.trim()) return fallback;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function throwIfSdkStreamAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw sdkStreamAbortError(signal);
+}
+
+function sdkStreamAbortError(signal?: AbortSignal): HttpError {
+  const reason = typeof signal?.reason === "string" ? signal.reason : "";
+  if (reason === "cursor_sdk_run_timeout") {
+    return new HttpError("Cursor local SDK run timed out.", 504, "cursor_sdk_run_timeout");
+  }
+  return new HttpError("Cursor local SDK stream aborted.", 504, "cursor_sdk_stream_aborted");
+}
+
+async function readStreamChunkWithTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  idleTimeoutMs: number,
+  signal?: AbortSignal
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  throwIfSdkStreamAborted(signal);
+  if (idleTimeoutMs <= 0) {
+    return reader.read();
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const settle = (result: ReadableStreamReadResult<Uint8Array>) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const timer = setTimeout(() => {
+      fail(new HttpError("Cursor local SDK stream timed out waiting for data.", 504, "cursor_sdk_stream_idle_timeout"));
+    }, idleTimeoutMs);
+    const onAbort = () => {
+      fail(sdkStreamAbortError(signal));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    reader.read().then(settle, fail);
   });
 }
 
@@ -955,13 +1025,17 @@ function encodeConnectFrame(payload: Uint8Array): Uint8Array {
   return frame;
 }
 
-async function* parseConnectProtoFrames(stream: ReadableStream<Uint8Array> | null): AsyncGenerator<Uint8Array> {
+async function* parseConnectProtoFrames(
+  stream: ReadableStream<Uint8Array> | null,
+  options: { idleTimeoutMs?: number; signal?: AbortSignal } = {}
+): AsyncGenerator<Uint8Array> {
   if (!stream) return;
   const reader = stream.getReader();
+  const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_SDK_STREAM_IDLE_TIMEOUT_MS;
   let buffer = new Uint8Array(0);
   try {
     for (;;) {
-      const { value, done } = await reader.read();
+      const { value, done } = await readStreamChunkWithTimeout(reader, idleTimeoutMs, options.signal);
       if (done) break;
       if (value) buffer = concatBytes(buffer, value);
       for (;;) {

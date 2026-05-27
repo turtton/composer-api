@@ -9,6 +9,7 @@ loadLocalEnvFiles();
 
 const host = process.env.COMPOSER_API_HOST || "127.0.0.1";
 const port = parsePort(process.env.COMPOSER_API_PORT, 8787);
+const requestTimeoutMs = parseTimeoutMs(process.env.COMPOSER_API_REQUEST_TIMEOUT_MS, 130_000);
 const baseUrl = `http://${host}:${port}`;
 
 const env = buildEnv(port);
@@ -27,7 +28,15 @@ const server = http.createServer((request, response) => {
 server.listen(port, host, () => {
   console.log(`Composer API listening on ${baseUrl}`);
   console.log(`OpenCode base URL: ${baseUrl}/opencodev2/v1`);
+  if (requestTimeoutMs > 0) {
+    console.log(`HTTP request timeout: ${requestTimeoutMs}ms`);
+  }
 });
+
+if (requestTimeoutMs > 0) {
+  server.requestTimeout = requestTimeoutMs;
+  server.headersTimeout = requestTimeoutMs + 5_000;
+}
 
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
@@ -60,7 +69,10 @@ function buildEnv(listenPort: number): Env {
     CURSOR_LOCAL_AGENT_ENDPOINT: requiredEnv("CURSOR_LOCAL_AGENT_ENDPOINT"),
     CURSOR_SDK_BRIDGE_URL: `http://127.0.0.1:${listenPort}/sdk`,
     CURSOR_SDK_BRIDGE_TOKEN: process.env.CURSOR_SDK_BRIDGE_TOKEN,
-    CURSOR_SDK_CLIENT_VERSION: process.env.CURSOR_SDK_CLIENT_VERSION || "sdk-1.0.13"
+    CURSOR_SDK_CLIENT_VERSION: process.env.CURSOR_SDK_CLIENT_VERSION || "sdk-1.0.13",
+    CURSOR_SDK_RUN_TIMEOUT_MS: process.env.CURSOR_SDK_RUN_TIMEOUT_MS,
+    CURSOR_SDK_STREAM_IDLE_TIMEOUT_MS: process.env.CURSOR_SDK_STREAM_IDLE_TIMEOUT_MS,
+    CURSOR_SDK_STREAM_START_TIMEOUT_MS: process.env.CURSOR_SDK_STREAM_START_TIMEOUT_MS
   };
 }
 
@@ -74,6 +86,12 @@ function requiredEnv(name: string): string {
 }
 
 function parsePort(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseTimeoutMs(value: string | undefined, fallback: number): number {
+  if (value === "0") return 0;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
