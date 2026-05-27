@@ -7,7 +7,6 @@ Local OpenCode-compatible API proxy for Cursor Composer.
 ```bash
 pnpm install
 cp .env.example .env
-export CURSOR_API_KEY="crsr_..."
 pnpm start
 ```
 
@@ -25,14 +24,16 @@ Add a custom provider to `~/.config/opencode/opencode.json`:
   "providers": {
     "cursor": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "Cursor Composer 2.5",
+      "name": "Cursor",
       "options": {
         "baseURL": "http://127.0.0.1:8787/opencodev2/v1",
-        "apiKey": "${CURSOR_API_KEY}"
       },
       "models": {
-        "composer-2.5-sdk": {
-          "name": "Composer 2.5 SDK Harness"
+        "composer-2.5-fast": {
+          "name": "Composer 2.5 Fast"
+        },
+        "composer-2.5": {
+          "name": "Composer 2.5"
         }
       }
     }
@@ -40,11 +41,11 @@ Add a custom provider to `~/.config/opencode/opencode.json`:
 }
 ```
 
-Then run OpenCode with your Cursor API key in the environment:
+Then run OpenCode and put your Cursor API key:
 
 ```bash
-export CURSOR_API_KEY="crsr_..."
 opencode
+/connect
 ```
 
 ## What this is
