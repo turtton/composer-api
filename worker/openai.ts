@@ -610,7 +610,7 @@ function appendSdkToolInventory(transcript: string[], tools: OpenAiToolSpec[], t
     "",
     "OPENCODE TOOL INVENTORY:",
     `Allowed tool names: ${tools.map((tool) => tool.name).join(", ")}`,
-    "Use only the client's local tools for filesystem and shell work. Prefer shell/read/write/edit/glob/grep/ls style tool requests when those capabilities are present."
+    "Use only the client's local tools for filesystem, shell, and subagent work. Prefer shell/read/write/edit/glob/grep/ls for direct changes, and use task with description, prompt, and subagent_type when delegating to a subagent."
   );
   for (const tool of tools) {
     transcript.push(
@@ -910,6 +910,14 @@ function openCodeArgsToSdkArgs(toolName: string, args: Record<string, unknown>):
       pattern: firstStringArg(args, "pattern", "query", "search", "regex"),
       path: firstStringArg(args, "path", "directory", "cwd"),
       glob: firstStringArg(args, "glob", "include")
+    });
+  }
+  if (normalized === "task") {
+    return compactRecord({
+      description: firstStringArg(args, "description"),
+      prompt: firstStringArg(args, "prompt", "instructions", "query"),
+      subagent_type: firstStringArg(args, "subagent_type", "subagentType", "agent"),
+      task_id: firstStringArg(args, "task_id", "taskId", "resume")
     });
   }
   return args;

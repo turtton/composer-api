@@ -40,6 +40,7 @@ type ArgsKind =
   | "readTool"
   | "semSearch"
   | "shell"
+  | "task"
   | "write";
 
 interface ToolSpec {
@@ -63,7 +64,8 @@ const TOOL_CALL_SPECS: Record<number, ToolSpec> = {
   13: { name: "ls", argsKind: "ls" },
   14: { name: "readLints", argsKind: "readLints" },
   15: { name: "mcp", argsKind: "mcp" },
-  16: { name: "semSearch", argsKind: "semSearch" }
+  16: { name: "semSearch", argsKind: "semSearch" },
+  19: { name: "task", argsKind: "task" }
 };
 
 const EXEC_TOOL_SPECS: Record<number, ToolSpec> = {
@@ -127,6 +129,7 @@ export function resetCursorSdkSessionCacheForTest() {
 
 export const cursorSdkTestExports = {
   decodeLocalAgentServerFrame,
+  decodeSdkToolCall,
   encodeAgentClientRunRequest,
   isEmittableSdkToolCall,
   normalizeSdkToolCallForOpenCode
@@ -573,7 +576,61 @@ function decodeToolArgs(kind: ArgsKind, payload: Uint8Array): Record<string, unk
         targetDirectories: stringFields(fields, 2),
         explanation: stringField(fields, 3)
       });
+    case "task":
+      return compactRecord({
+        description: stringField(fields, 1),
+        prompt: stringField(fields, 2),
+        subagent_type: normalizeSubagentTypeForOpenCode(decodeSubagentType(bytesField(fields, 3))),
+        task_id: stringField(fields, 5)
+      });
   }
+}
+
+function decodeSubagentType(payload: Uint8Array | undefined): string | undefined {
+  if (!payload?.length) return undefined;
+  for (const field of decodeProtobufFields(payload)) {
+    if (!(field.value instanceof Uint8Array)) continue;
+    switch (field.no) {
+      case 1:
+        return "unspecified";
+      case 2:
+        return "computer_use";
+      case 3:
+        return stringField(decodeProtobufFields(field.value), 1);
+      case 4:
+        return "explore";
+      case 5:
+        return "media_review";
+      case 6:
+        return "bash";
+      case 7:
+        return "browser_use";
+      case 8:
+        return "shell";
+      case 9:
+        return "vm_setup_helper";
+      case 10:
+        return "debug";
+      case 11:
+        return "cursor-guide";
+      case 12:
+        return "watch_video";
+    }
+  }
+  return undefined;
+}
+
+function normalizeSubagentTypeForOpenCode(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const aliases: Record<string, string> = {
+    generalPurpose: "general",
+    "general-purpose": "general",
+    general_purpose: "general",
+    unspecified: "general"
+  };
+  return aliases[trimmed] ?? trimmed;
 }
 
 function isEmittableSdkToolCall(toolCall: CursorToolCall): boolean {
@@ -594,6 +651,9 @@ function isEmittableSdkToolCall(toolCall: CursorToolCall): boolean {
   if (name === "semSearch") return hasStringArg(args, "query");
   if (name === "readLints") return Array.isArray(args.paths) && args.paths.some((item) => typeof item === "string" && item.trim());
   if (name === "mcp") return hasStringArg(args, "toolName") || hasStringArg(args, "providerIdentifier");
+  if (name === "task") {
+    return hasStringArg(args, "description") && hasStringArg(args, "prompt") && hasStringArg(args, "subagent_type");
+  }
   return Object.keys(args).length > 0;
 }
 
