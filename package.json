@@ -15,8 +15,10 @@
   "scripts": {
     "start": "tsx scripts/opencode-local-server.ts",
     "dev": "tsx scripts/opencode-local-server.ts",
+    "opencode:run": "tsx scripts/opencode-run.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:opencode": "bash scripts/test-opencode-websearch.sh",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [
