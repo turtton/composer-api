@@ -18,6 +18,7 @@ import type { CursorTextEvent } from "./cursor";
 import type { OpenAiToolSpec } from "./openai";
 
 const SSE_KEEPALIVE = new TextEncoder().encode(": keepalive\n\n");
+const KEEPALIVE_INTERVAL_MS = 10_000;
 
 interface AuthResult {
   cursorApiKey: string;
@@ -175,15 +176,41 @@ function streamOpenAiChat(
     let toolCallCount = 0;
     let finishReason: "stop" | "tool_calls" = "stop";
     const streamedToolCalls: ReturnType<typeof toOpenAiToolCalls> = [];
+    let sentThinkingIndicator = false;
     try {
       await writer.write(chatChunk({ id: input.id, created: input.created, model: input.model, role: "assistant" }));
 
-      for await (const event of cursorEvents) {
+      const iterator = (cursorEvents as AsyncIterable<CursorTextEvent>)[Symbol.asyncIterator]();
+      let pending: Promise<IteratorResult<CursorTextEvent>> | null = null;
+
+      for (;;) {
+        if (!pending) pending = iterator.next();
+
+        const raceResult = await Promise.race([
+          pending.then((r) => ({ kind: "event" as const, result: r })),
+          new Promise<{ kind: "idle" }>((resolve) => setTimeout(() => resolve({ kind: "idle" }), KEEPALIVE_INTERVAL_MS))
+        ]);
+
+        if (raceResult.kind === "idle") {
+          if (!sentThinkingIndicator) {
+            await writer.write(chatChunk({ id: input.id, created: input.created, model: input.model, reasoningContent: "..." }));
+            sentThinkingIndicator = true;
+          } else {
+            await writer.write(SSE_KEEPALIVE);
+          }
+          continue;
+        }
+
+        pending = null;
+        if (raceResult.result.done) break;
+        const event = raceResult.result.value;
+
         if (event.type === "text" && event.text) {
           text += event.text;
           await writer.write(chatChunk({ id: input.id, created: input.created, model: input.model, delta: event.text }));
         }
         if (event.type === "thinking" && event.text) {
+          sentThinkingIndicator = true;
           await writer.write(chatChunk({ id: input.id, created: input.created, model: input.model, reasoningContent: event.text }));
         }
         if (event.type === "keepalive") {

@@ -242,6 +242,37 @@ describe("Worker", () => {
     expect(body).toContain('"finish_reason":"stop"');
   });
 
+  it("sends reasoning_content indicator then keepalive when Cursor is silent", async () => {
+    const env = makeEnv();
+    const { deps } = fakeDeps({ silentThinking: true });
+
+    const response = await handleRequest(
+      new Request("https://composer.test/opencode/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer cursor_direct_key_silent",
+          "x-session-affinity": "silent-session"
+        },
+        body: JSON.stringify({
+          model: "composer-2.5",
+          stream: true,
+          messages: [{ role: "user", content: "Silent thinking test" }]
+        })
+      }),
+      env,
+      fakeCtx(),
+      deps
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('"reasoning_content":"..."');
+    expect(body).toContain(": keepalive");
+    expect(body).toContain('"content":"Done after silence"');
+    expect(body).toContain('"finish_reason":"stop"');
+  }, 40_000);
+
   it("can route OpenCode SDK runs through a standard streaming bridge", async () => {
     const env = makeEnv({ CURSOR_SDK_BRIDGE_URL: "https://bridge.test/sdk" });
     const { deps, sdkRequests } = fakeDeps();
@@ -518,7 +549,7 @@ describe("Worker", () => {
   });
 });
 
-function fakeDeps(options: { thinkingResponse?: boolean } = {}): {
+function fakeDeps(options: { thinkingResponse?: boolean; silentThinking?: boolean } = {}): {
   deps: Deps;
   exchangeAuthHeaders: string[];
   chatAuthHeaders: string[];
@@ -592,6 +623,20 @@ function fakeDeps(options: { thinkingResponse?: boolean } = {}): {
                 );
                 controller.enqueue(connectFrame(new TextEncoder().encode("{}"), 2));
                 controller.close();
+              }
+            }),
+            { headers: { "Content-Type": "application/connect+proto" } }
+          );
+        }
+        if (options.silentThinking && requestText.includes("Silent thinking test")) {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                setTimeout(() => {
+                  controller.enqueue(connectFrame(chatResponseText("Done after silence")));
+                  controller.enqueue(connectFrame(new TextEncoder().encode("{}"), 2));
+                  controller.close();
+                }, 25_000);
               }
             }),
             { headers: { "Content-Type": "application/connect+proto" } }
