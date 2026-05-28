@@ -180,15 +180,15 @@ describe("Cursor SDK harness", () => {
     ).toBe(true);
   });
 
-  it("converts completed SDK streaming edits into OpenCode writes", () => {
+  it("passes through edit tool calls without transformation", () => {
     expect(
       cursorSdkTestExports.normalizeSdkToolCallForOpenCode({
         name: "edit",
         arguments: { path: "scripts/verify.mjs", streamContent: "console.log('ok')\n" }
       })
     ).toEqual({
-      name: "write",
-      arguments: { path: "scripts/verify.mjs", fileText: "console.log('ok')\n" }
+      name: "edit",
+      arguments: { path: "scripts/verify.mjs", streamContent: "console.log('ok')\n" }
     });
     expect(cursorSdkTestExports.isEmittableSdkToolCall({ name: "edit", arguments: { path: "scripts/verify.mjs", streamContent: "x" } })).toBe(
       true
@@ -349,29 +349,18 @@ describe("Cursor SDK harness", () => {
     ]);
   });
 
-  it("aggregates streaming edit tool-call chunks before emitting the final write", () => {
-    const path = "scripts/verify.mjs";
-    const partialArgs = protoMessage([protoStringField(1, path), protoStringField(6, "console.log('")]);
-    const fullArgs = protoMessage([protoStringField(1, path), protoStringField(6, "console.log('ok')\n")]);
-    const partialToolCall = protoMessage([protoBytesField(12, protoMessage([protoBytesField(1, partialArgs)]))]);
-    const fullToolCall = protoMessage([protoBytesField(12, protoMessage([protoBytesField(1, fullArgs)]))]);
-    const started = protoMessage([protoStringField(1, "edit_call_1"), protoBytesField(2, partialToolCall)]);
-    const completed = protoMessage([protoStringField(1, "edit_call_1"), protoBytesField(2, fullToolCall)]);
-
-    const first = cursorSdkTestExports.decodeToolCallUpdate(started, false);
-    const second = cursorSdkTestExports.decodeToolCallUpdate(completed, true);
-    expect(first?.type).toBe("tool_call");
-    expect(second?.type).toBe("tool_call");
-    if (first?.type !== "tool_call" || second?.type !== "tool_call") throw new Error("expected tool_call events");
-
-    const merged = cursorSdkTestExports.mergePendingSdkToolCall(first.toolCall, second.toolCall);
-    const normalized = cursorSdkTestExports.normalizeSdkToolCallForOpenCode(merged);
-    expect(normalized).toEqual({
-      name: "write",
-      arguments: { path, fileText: "console.log('ok')\n" }
-    });
-    expect(cursorSdkTestExports.isEmittableSdkToolCall(normalized)).toBe(true);
-    expect(cursorSdkTestExports.isEmittableSdkToolCall(first.toolCall)).toBe(true);
+  it("aggregates streaming tool-call chunks via mergePendingSdkToolCall", () => {
+    const first: Parameters<typeof cursorSdkTestExports.mergePendingSdkToolCall>[0] = {
+      name: "shell",
+      arguments: { command: "npm " }
+    };
+    const second: Parameters<typeof cursorSdkTestExports.mergePendingSdkToolCall>[1] = {
+      name: "shell",
+      arguments: { command: "npm test" }
+    };
+    const merged = cursorSdkTestExports.mergePendingSdkToolCall(first, second);
+    expect(merged).toEqual({ name: "shell", arguments: { command: "npm test" } });
+    expect(cursorSdkTestExports.isEmittableSdkToolCall(merged)).toBe(true);
   });
 
   it("warns and ignores unknown SDK tool field numbers without crashing", () => {

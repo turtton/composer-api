@@ -286,10 +286,6 @@ async function* streamCursorLocalSdkRun(
           upsertPendingSdkToolCall(pendingToolCalls, event.id, event.toolCall, event.completed);
           for (const emitted of emitCompletedPendingSdkToolCalls(pendingToolCalls, emittedToolCallIds, toolCalls)) {
             yield emitted;
-            if (emitted.type === "tool_call") {
-              yield { type: "done", finalText: text, toolCalls };
-              return;
-            }
           }
         } else if (event.type === "request_context") {
           if (uploadOpen && uploadWriter) {
@@ -302,10 +298,6 @@ async function* streamCursorLocalSdkRun(
         } else if (event.type === "done") {
           for (const emitted of emitCompletedPendingSdkToolCalls(pendingToolCalls, emittedToolCallIds, toolCalls)) {
             yield emitted;
-            if (emitted.type === "tool_call") {
-              yield { type: "done", finalText: text, toolCalls };
-              return;
-            }
           }
           yield { type: "done", finalText: text, toolCalls };
           return;
