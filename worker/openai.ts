@@ -659,11 +659,54 @@ function appendChatTools(transcript: string[], tools: OpenAiToolSpec[], toolChoi
 }
 
 function filterSdkCallableTools(tools: OpenAiToolSpec[]): OpenAiToolSpec[] {
-  return tools.filter((tool) => isSdkCallableTool(tool.name));
+  return tools.filter((tool) => isSdkCallableTool(tool.name)).map(narrowSdkToolSpec);
 }
 
 function isSdkCallableTool(name: string): boolean {
   return SDK_CALLABLE_TOOL_NAMES.has(normalizeToolName(name));
+}
+
+const CURSOR_SDK_KNOWN_SUBAGENT_TYPES = new Set([
+  "general", "generalPurpose", "general-purpose", "general_purpose",
+  "explore",
+  "shell",
+  "cursor-guide",
+  "browser-use", "browser_use",
+  "best-of-n-runner"
+]);
+
+function narrowSdkToolSpec(tool: OpenAiToolSpec): OpenAiToolSpec {
+  if (normalizeToolName(tool.name) !== "task") return tool;
+  return narrowTaskSubagentTypes(tool);
+}
+
+function narrowTaskSubagentTypes(tool: OpenAiToolSpec): OpenAiToolSpec {
+  const params = isRecord(tool.parameters) ? tool.parameters : undefined;
+  const props = isRecord(params?.properties) ? params!.properties : undefined;
+  const subagentProp = isRecord(props?.subagent_type) ? props!.subagent_type : undefined;
+  if (!subagentProp) return tool;
+
+  const enumValues = Array.isArray(subagentProp.enum) ? subagentProp.enum.filter(
+    (v): v is string => typeof v === "string" && CURSOR_SDK_KNOWN_SUBAGENT_TYPES.has(v)
+  ) : undefined;
+
+  if (!enumValues || enumValues.length === (Array.isArray(subagentProp.enum) ? subagentProp.enum.length : -1)) {
+    return tool;
+  }
+
+  return {
+    ...tool,
+    parameters: {
+      ...params,
+      properties: {
+        ...props,
+        subagent_type: {
+          ...subagentProp,
+          ...(enumValues.length ? { enum: enumValues } : {})
+        }
+      }
+    }
+  };
 }
 
 function mergeCursorHostedSdkTools(tools: OpenAiToolSpec[]): OpenAiToolSpec[] {

@@ -535,4 +535,108 @@ describe("OpenAI compatibility adapter", () => {
 
     expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({ pattern: "*" });
   });
+
+  it("narrows task tool subagent_type enum to Cursor-supported types", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5",
+        messages: [{ role: "user", content: "Explore the codebase" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "task",
+              description: "Delegate to a subagent",
+              parameters: {
+                type: "object",
+                properties: {
+                  description: { type: "string" },
+                  prompt: { type: "string" },
+                  subagent_type: {
+                    type: "string",
+                    enum: ["generalPurpose", "explore", "oracle", "librarian", "metis"]
+                  }
+                },
+                required: ["description", "prompt", "subagent_type"]
+              }
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5" }
+    );
+
+    const taskTool = prepared.tools.find((t) => t.name === "task");
+    expect(taskTool).toBeDefined();
+    const params = taskTool!.parameters as Record<string, unknown>;
+    const props = params.properties as Record<string, unknown>;
+    const subagentType = props.subagent_type as Record<string, unknown>;
+    expect(subagentType.enum).toEqual(["generalPurpose", "explore"]);
+  });
+
+  it("passes through task tool when all subagent_type values are Cursor-supported", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5",
+        messages: [{ role: "user", content: "Explore" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "task",
+              parameters: {
+                type: "object",
+                properties: {
+                  description: { type: "string" },
+                  prompt: { type: "string" },
+                  subagent_type: { type: "string", enum: ["generalPurpose", "explore"] }
+                },
+                required: ["description", "prompt", "subagent_type"]
+              }
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5" }
+    );
+
+    const taskTool = prepared.tools.find((t) => t.name === "task");
+    const params = taskTool!.parameters as Record<string, unknown>;
+    const props = params.properties as Record<string, unknown>;
+    const subagentType = props.subagent_type as Record<string, unknown>;
+    expect(subagentType.enum).toEqual(["generalPurpose", "explore"]);
+  });
+
+  it("leaves task tool unchanged when subagent_type has no enum", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5",
+        messages: [{ role: "user", content: "Explore" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "task",
+              parameters: {
+                type: "object",
+                properties: {
+                  description: { type: "string" },
+                  prompt: { type: "string" },
+                  subagent_type: { type: "string" }
+                },
+                required: ["description", "prompt", "subagent_type"]
+              }
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5" }
+    );
+
+    const taskTool = prepared.tools.find((t) => t.name === "task");
+    const params = taskTool!.parameters as Record<string, unknown>;
+    const props = params.properties as Record<string, unknown>;
+    const subagentType = props.subagent_type as Record<string, unknown>;
+    expect(subagentType.enum).toBeUndefined();
+  });
 });
