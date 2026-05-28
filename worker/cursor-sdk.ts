@@ -277,26 +277,37 @@ async function* streamCursorLocalSdkRun(
     let subagentIdleFrames = 0;
     const SUBAGENT_IDLE_FRAME_THRESHOLD = 3;
     const SUBAGENT_IDLE_TIME_MS = 5_000;
+    let toolCallBatchDeadline: number | null = null;
+    // The model often proposes multiple tool calls in sequence with several
+    // hundred ms of token-delta frames between them. A 2s silence window
+    // after the last emitted tool call ensures we batch all of them before
+    // synthesizing done, while still being fast enough to avoid the ~30s
+    // idle hang that occurs when the server waits for exec results we never
+    // send (OpenCode executes tools and provides results via follow-up requests).
+    const TOOL_CALL_BATCH_WINDOW_MS = 2_000;
 
     for await (const frame of parseConnectProtoFrames(response.body, { idleTimeoutMs, signal: runAbort.signal })) {
       yieldedInFrame = false;
       const events = decodeLocalAgentServerFrame(frame);
       const evtSummary = events.map((e) => e.type === "tool_call" ? `tool_call(${e.toolCall.name},completed=${e.completed})` : e.type).join(",");
-      if (evtSummary === "ignore" && frame.length > 10) {
+      if (evtSummary === "ignore" && frame.length > 128) {
         const topFields = decodeProtobufFields(frame).map((f) => `${f.no}:${f.value instanceof Uint8Array ? `b(${f.value.length})` : `v(${f.value})`}`);
         console.log(`[sdk-debug] frame#${frameIndex} size=${frame.length} events=[ignore] topFields=[${topFields.join(",")}]`);
       } else {
         console.log(`[sdk-debug] frame#${frameIndex} size=${frame.length} events=[${evtSummary}]`);
       }
       let frameHasSubagentOutput = false;
+      let frameHasContent = false;
       for (const event of events) {
         if (event.type === "text" && event.text) {
           text += event.text;
           yield { type: "text", text: event.text };
           yieldedInFrame = true;
+          frameHasContent = true;
         } else if (event.type === "thinking" && event.text) {
           yield { type: "thinking", text: event.text };
           yieldedInFrame = true;
+          frameHasContent = true;
         } else if (event.type === "subagent_output") {
           subagentActive = true;
           subagentLastOutputTime = Date.now();
@@ -315,13 +326,16 @@ async function* streamCursorLocalSdkRun(
             continue;
           }
           upsertPendingSdkToolCall(pendingToolCalls, event.id, event.toolCall, event.completed);
+          frameHasContent = true;
           for (const emitted of emitCompletedPendingSdkToolCalls(pendingToolCalls, emittedToolCallIds, toolCalls)) {
             console.log(`[sdk-debug] emitting pending tool_call name=${emitted.type === "tool_call" ? emitted.toolCall.name : "?"}`);
             yield emitted;
             yieldedInFrame = true;
+            toolCallBatchDeadline = Date.now() + TOOL_CALL_BATCH_WINDOW_MS;
           }
         } else if (event.type === "request_context") {
           console.log(`[sdk-debug] request_context id=${event.id}`);
+          frameHasContent = true;
           if (uploadOpen && uploadWriter) {
             await writeSdkUpload(uploadWriter, encodeConnectFrame(encodeAgentClientRequestContextResult(event)));
           }
@@ -355,6 +369,18 @@ async function* streamCursorLocalSdkRun(
           yield { type: "done", finalText: text, toolCalls };
           return;
         }
+      }
+      if (frameHasContent) {
+        if (toolCallBatchDeadline !== null) {
+          toolCallBatchDeadline = Date.now() + TOOL_CALL_BATCH_WINDOW_MS;
+        }
+      } else if (toolCallBatchDeadline !== null && Date.now() >= toolCallBatchDeadline) {
+        console.log(`[sdk-debug] tool call batch complete (emitted=${emittedToolCallIds.size}), synthesizing done`);
+        for (const emitted of emitCompletedPendingSdkToolCalls(pendingToolCalls, emittedToolCallIds, toolCalls)) {
+          yield emitted;
+        }
+        yield { type: "done", finalText: text, toolCalls };
+        return;
       }
       if (!yieldedInFrame) {
         yield { type: "keepalive" as const };
