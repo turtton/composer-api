@@ -268,11 +268,14 @@ async function* streamCursorLocalSdkRun(
   const response = selected.response;
 
   try {
+    let yieldedInFrame = false;
     for await (const frame of parseConnectProtoFrames(response.body, { idleTimeoutMs, signal: runAbort.signal })) {
+      yieldedInFrame = false;
       for (const event of decodeLocalAgentServerFrame(frame)) {
         if (event.type === "text" && event.text) {
           text += event.text;
           yield { type: "text", text: event.text };
+          yieldedInFrame = true;
         } else if (event.type === "tool_call") {
           if (isUnsupportedSdkToolCall(event.toolCall)) {
             if (!emittedUnsupportedToolCallIds.has(event.id)) {
@@ -280,12 +283,14 @@ async function* streamCursorLocalSdkRun(
               const message = formatUnsupportedSdkToolMessage(event.toolCall.name);
               text += message;
               yield { type: "text", text: message };
+              yieldedInFrame = true;
             }
             continue;
           }
           upsertPendingSdkToolCall(pendingToolCalls, event.id, event.toolCall, event.completed);
           for (const emitted of emitCompletedPendingSdkToolCalls(pendingToolCalls, emittedToolCallIds, toolCalls)) {
             yield emitted;
+            yieldedInFrame = true;
           }
         } else if (event.type === "request_context") {
           if (uploadOpen && uploadWriter) {
@@ -302,6 +307,9 @@ async function* streamCursorLocalSdkRun(
           yield { type: "done", finalText: text, toolCalls };
           return;
         }
+      }
+      if (!yieldedInFrame) {
+        yield { type: "keepalive" as const };
       }
     }
   } finally {

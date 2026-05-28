@@ -17,6 +17,8 @@ import type { Deps, Env, RouteContext } from "./types";
 import type { CursorTextEvent } from "./cursor";
 import type { OpenAiToolSpec } from "./openai";
 
+const SSE_KEEPALIVE = new TextEncoder().encode(": keepalive\n\n");
+
 interface AuthResult {
   cursorApiKey: string;
 }
@@ -180,6 +182,12 @@ function streamOpenAiChat(
         if (event.type === "text" && event.text) {
           text += event.text;
           await writer.write(chatChunk({ id: input.id, created: input.created, model: input.model, delta: event.text }));
+        }
+        if (event.type === "thinking" && event.text) {
+          await writer.write(chatChunk({ id: input.id, created: input.created, model: input.model, reasoningContent: event.text }));
+        }
+        if (event.type === "keepalive") {
+          await writer.write(SSE_KEEPALIVE);
         }
         if (event.type === "tool_call") {
           finishReason = "tool_calls";

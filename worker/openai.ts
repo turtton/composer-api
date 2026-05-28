@@ -366,6 +366,7 @@ export function chatChunk(input: {
   created: number;
   model: string;
   delta?: string;
+  reasoningContent?: string;
   role?: "assistant";
   toolCall?: { index: number; value: OpenAiToolCall };
   finish?: boolean;
@@ -376,6 +377,7 @@ export function chatChunk(input: {
     : {
         ...(input.role ? { role: input.role } : {}),
         ...(input.delta ? { content: input.delta } : {}),
+        ...(input.reasoningContent ? { reasoning_content: input.reasoningContent } : {}),
         ...(input.toolCall
           ? {
               tool_calls: [

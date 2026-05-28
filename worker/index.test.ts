@@ -211,6 +211,37 @@ describe("Worker", () => {
     expect(sdkRequests.map((item) => `${item.method} ${item.path}`)).toEqual(["POST /test-local-sdk"]);
   });
 
+  it("streams reasoning_content during extended thinking in streaming mode", async () => {
+    const env = makeEnv();
+    const { deps } = fakeDeps({ thinkingResponse: true });
+
+    const response = await handleRequest(
+      new Request("https://composer.test/opencode/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer cursor_direct_key_thinking",
+          "x-session-affinity": "thinking-session"
+        },
+        body: JSON.stringify({
+          model: "composer-2.5",
+          stream: true,
+          messages: [{ role: "user", content: "Think hard about this" }]
+        })
+      }),
+      env,
+      fakeCtx(),
+      deps
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('"reasoning_content":"Let me reason step 1."');
+    expect(body).toContain('"reasoning_content":" Step 2 reasoning."');
+    expect(body).toContain('"content":"Final answer"');
+    expect(body).toContain('"finish_reason":"stop"');
+  });
+
   it("can route OpenCode SDK runs through a standard streaming bridge", async () => {
     const env = makeEnv({ CURSOR_SDK_BRIDGE_URL: "https://bridge.test/sdk" });
     const { deps, sdkRequests } = fakeDeps();
@@ -487,7 +518,7 @@ describe("Worker", () => {
   });
 });
 
-function fakeDeps(): {
+function fakeDeps(options: { thinkingResponse?: boolean } = {}): {
   deps: Deps;
   exchangeAuthHeaders: string[];
   chatAuthHeaders: string[];
@@ -559,6 +590,20 @@ function fakeDeps(): {
                     )
                   )
                 );
+                controller.enqueue(connectFrame(new TextEncoder().encode("{}"), 2));
+                controller.close();
+              }
+            }),
+            { headers: { "Content-Type": "application/connect+proto" } }
+          );
+        }
+        if (options.thinkingResponse && requestText.includes("Think hard about this")) {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(connectFrame(chatResponseThinking("Let me reason step 1.")));
+                controller.enqueue(connectFrame(chatResponseThinking(" Step 2 reasoning.")));
+                controller.enqueue(connectFrame(chatResponseThinking("\n</think>\nFinal answer")));
                 controller.enqueue(connectFrame(new TextEncoder().encode("{}"), 2));
                 controller.close();
               }

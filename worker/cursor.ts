@@ -85,7 +85,9 @@ export const cursorTestExports = {
 
 export type CursorTextEvent =
   | { type: "text"; text: string }
+  | { type: "thinking"; text: string }
   | { type: "tool_call"; toolCall: CursorToolCall }
+  | { type: "keepalive" }
   | { type: "done"; finalText: string; toolCalls: CursorToolCall[] };
 
 export async function* streamCursorText(response: Response): AsyncGenerator<CursorTextEvent> {
@@ -127,8 +129,13 @@ export async function* streamCursorText(response: Response): AsyncGenerator<Curs
       yield* emit(event.text);
     }
     if (event.type === "thinking" && event.text) {
-      for (const delta of thinking.push(event.text)) {
-        yield* emit(delta);
+      const deltas = thinking.push(event.text);
+      if (deltas.length) {
+        for (const delta of deltas) {
+          yield* emit(delta);
+        }
+      } else {
+        yield { type: "thinking", text: event.text };
       }
     }
   }

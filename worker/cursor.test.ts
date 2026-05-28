@@ -103,6 +103,7 @@ describe("Cursor stream adapter", () => {
     const events = [];
     for await (const event of streamCursorText(response)) events.push(event);
     expect(events).toEqual([
+      { type: "thinking", text: "The user asked for OK." },
       { type: "text", text: "OK" },
       { type: "done", finalText: "OK", toolCalls: [] }
     ]);
@@ -124,6 +125,31 @@ describe("Cursor stream adapter", () => {
     expect(events).toEqual([
       { type: "text", text: "Visible answer" },
       { type: "done", finalText: "Visible answer", toolCalls: [] }
+    ]);
+  });
+
+  it("emits thinking events for each thinking frame that does not produce output", async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(connectFrame(chatResponseThinking("Step 1 of reasoning.")));
+          controller.enqueue(connectFrame(chatResponseThinking(" Step 2 of reasoning.")));
+          controller.enqueue(connectFrame(chatResponseThinking(" Step 3 of reasoning.")));
+          controller.enqueue(connectFrame(chatResponseThinking("\n</think>\nFinal answer")));
+          controller.enqueue(connectFrame(new TextEncoder().encode("{}"), 2));
+          controller.close();
+        }
+      }),
+      { headers: { "Content-Type": "application/connect+proto" } }
+    );
+    const events = [];
+    for await (const event of streamCursorText(response)) events.push(event);
+    expect(events).toEqual([
+      { type: "thinking", text: "Step 1 of reasoning." },
+      { type: "thinking", text: " Step 2 of reasoning." },
+      { type: "thinking", text: " Step 3 of reasoning." },
+      { type: "text", text: "Final answer" },
+      { type: "done", finalText: "Final answer", toolCalls: [] }
     ]);
   });
 
