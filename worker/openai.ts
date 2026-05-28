@@ -107,6 +107,26 @@ const CURSOR_HOSTED_SDK_TOOLS: OpenAiToolSpec[] = [
 
 const CURSOR_HOSTED_SDK_TOOL_NAMES = new Set(CURSOR_HOSTED_SDK_TOOLS.map((tool) => tool.name.toLowerCase()));
 
+const SDK_CALLABLE_TOOL_NAMES = new Set([
+  "bash", "shell", "terminal",
+  "read", "readfile",
+  "write", "writefile", "createfile",
+  "edit", "editfile", "replacefile", "searchreplace",
+  "delete",
+  "glob", "fileglob", "findfiles", "filesearch",
+  "grep", "search", "searchfiles",
+  "ls", "list",
+  "task",
+  "websearch",
+  "webfetch", "fetch", "web",
+  "todowrite", "todo", "updatetodos",
+  "question", "askquestion",
+  "mcp",
+  "await",
+  "switchmode",
+  "generateimage"
+]);
+
 export function prepareChatRequest(body: unknown, cursorModel: { id: string } | undefined, options: { forceAgentMode?: boolean } = {}): PreparedRequest {
   const record = expectRecord(body, "body");
   const messages = expectArray(record.messages, "messages");
@@ -169,7 +189,8 @@ export function prepareOpencodeSdkChatRequest(body: unknown, cursorModel: { id: 
   }
 
   const clientTools = record.tool_choice === "none" ? [] : parseChatTools(record.tools);
-  const tools = mergeCursorHostedSdkTools(clientTools);
+  const callableTools = filterSdkCallableTools(clientTools);
+  const tools = mergeCursorHostedSdkTools(callableTools);
   const model = typeof record.model === "string" && record.model.trim() ? record.model.trim() : "composer-2.5";
   const workspaceMutationRequired = tools.length > 0 && hasWorkspaceMutationIntent(messages);
   const workspaceMutationDone = workspaceMutationRequired && hasWorkspaceMutationToolCall(messages);
@@ -635,6 +656,14 @@ function appendChatTools(transcript: string[], tools: OpenAiToolSpec[], toolChoi
   } else if (toolChoice === "required") {
     transcript.push("You must call at least one tool.");
   }
+}
+
+function filterSdkCallableTools(tools: OpenAiToolSpec[]): OpenAiToolSpec[] {
+  return tools.filter((tool) => isSdkCallableTool(tool.name));
+}
+
+function isSdkCallableTool(name: string): boolean {
+  return SDK_CALLABLE_TOOL_NAMES.has(normalizeToolName(name));
 }
 
 function mergeCursorHostedSdkTools(tools: OpenAiToolSpec[]): OpenAiToolSpec[] {

@@ -112,7 +112,7 @@ The adapter can decode these when Composer emits the corresponding Cursor tool c
 
 ### Not supported (OpenCode-only)
 
-These appear in OpenCode's tool list but **cannot** be invoked via Composer through this adapter, because Cursor does not emit equivalent SDK tool calls:
+These **cannot** be invoked via Composer through this adapter, because Cursor does not emit equivalent SDK tool calls. The adapter **automatically strips** unsupported tools from the prompt so that Composer does not hallucinate about tools it cannot actually call.
 
 | OpenCode tool | Why |
 |---|---|
@@ -121,6 +121,8 @@ These appear in OpenCode's tool list but **cannot** be invoked via Composer thro
 | `apply_patch` | OpenCode expects `patchText`; Cursor's `apply_agent_diff` is a different internal API |
 | Custom tools (`opencode.json`, plugins) | No Cursor protobuf for arbitrary tool names |
 | `read_todos` / other OpenCode-only helpers | Not mapped |
+
+**Why can't custom tools work?** Cursor's SDK agent communicates tool calls exclusively via a fixed protobuf schema with hard-coded field numbers. There is no mechanism to register arbitrary tool names at the protocol level. Even if a tool is described in the prompt, the agent has no way to emit a structured call for it. Unsupported tools are therefore filtered out before the prompt reaches Cursor to avoid confusing the agent.
 
 OpenCode's optional `websearch` tool (Exa / Parallel) is **not used for execution** when you route the model through this proxy. The harness always lists `websearch` / `webfetch` for Composer anyway, and Cursor executes them when Composer requests those tool names.
 
@@ -143,8 +145,8 @@ If Composer emits these, the adapter may forward them, but OpenCode often has no
 - **Do not assume** OpenCode's native `websearch` / `webfetch` tools run when using this proxy; Cursor handles those instead.
 - **Do not assume** `todowrite` or `question` work just because they are enabled in OpenCode permissions.
 - **Custom OpenCode subagents** via `task` + `subagent_type` are supported when Composer delegates with the `task` tool.
-- **Custom OpenCode function tools** are not supported through this bridge.
-- If a feature is OpenCode-specific (skills, LSP tool, patch format), use OpenCode with a native model provider for that workflow instead of this Cursor proxy.
+- **Custom / plugin tools are automatically excluded** from the prompt sent to Cursor. The agent will never see or attempt to call them. If you need a custom tool, use OpenCode with a native model provider for that workflow instead of this Cursor proxy.
+- If a feature is OpenCode-specific (skills, LSP tool, patch format), use a native model provider.
 
 ## Supported endpoints
 
