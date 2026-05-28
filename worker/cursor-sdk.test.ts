@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { toOpenAiToolCalls } from "./openai";
 import { cursorSdkTestExports } from "./cursor-sdk";
 
@@ -347,6 +347,53 @@ describe("Cursor SDK harness", () => {
           "\n\n"
       }
     ]);
+  });
+
+  it("aggregates streaming edit tool-call chunks before emitting the final write", () => {
+    const path = "scripts/verify.mjs";
+    const partialArgs = protoMessage([protoStringField(1, path), protoStringField(6, "console.log('")]);
+    const fullArgs = protoMessage([protoStringField(1, path), protoStringField(6, "console.log('ok')\n")]);
+    const partialToolCall = protoMessage([protoBytesField(12, protoMessage([protoBytesField(1, partialArgs)]))]);
+    const fullToolCall = protoMessage([protoBytesField(12, protoMessage([protoBytesField(1, fullArgs)]))]);
+    const started = protoMessage([protoStringField(1, "edit_call_1"), protoBytesField(2, partialToolCall)]);
+    const completed = protoMessage([protoStringField(1, "edit_call_1"), protoBytesField(2, fullToolCall)]);
+
+    const first = cursorSdkTestExports.decodeToolCallUpdate(started, false);
+    const second = cursorSdkTestExports.decodeToolCallUpdate(completed, true);
+    expect(first?.type).toBe("tool_call");
+    expect(second?.type).toBe("tool_call");
+    if (first?.type !== "tool_call" || second?.type !== "tool_call") throw new Error("expected tool_call events");
+
+    const merged = cursorSdkTestExports.mergePendingSdkToolCall(first.toolCall, second.toolCall);
+    const normalized = cursorSdkTestExports.normalizeSdkToolCallForOpenCode(merged);
+    expect(normalized).toEqual({
+      name: "write",
+      arguments: { path, fileText: "console.log('ok')\n" }
+    });
+    expect(cursorSdkTestExports.isEmittableSdkToolCall(normalized)).toBe(true);
+    expect(cursorSdkTestExports.isEmittableSdkToolCall(first.toolCall)).toBe(true);
+  });
+
+  it("warns and ignores unknown SDK tool field numbers without crashing", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const decoded = cursorSdkTestExports.decodeSdkToolCall(
+      encodeNamedToolCall(99, encodeWrappedToolArgs(protoMessage([protoStringField(1, "noop")])))
+    );
+    expect(decoded).toBeNull();
+    expect(warn).toHaveBeenCalledWith("[cursor-sdk] unknown tool field number 99");
+    warn.mockRestore();
+  });
+
+  it("surfaces unsupported SDK tools as assistant guidance text", () => {
+    const frame = encodeNamedToolCall(
+      22,
+      encodeWrappedToolArgs(protoMessage([protoStringField(1, "ignored")]))
+    );
+    const decoded = cursorSdkTestExports.decodeSdkToolCall(frame);
+    expect(decoded?.toolCall.name).toBe("recordGrind");
+    expect(cursorSdkTestExports.isEmittableSdkToolCall(decoded!.toolCall)).toBe(false);
+    expect(cursorSdkTestExports.formatUnsupportedSdkToolMessage(decoded!.toolCall.name)).toContain("recordGrind");
+    expect(cursorSdkTestExports.formatUnsupportedSdkToolMessage(decoded!.toolCall.name)).toContain("not available");
   });
 
   it("decodes Cursor todo and question tool calls for OpenCode", () => {

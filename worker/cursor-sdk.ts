@@ -25,7 +25,7 @@ type InteractionQueryKind = "websearch" | "webfetch";
 
 type LocalSdkDecodedEvent =
   | { type: "text"; text: string }
-  | { type: "tool_call"; id: string; toolCall: CursorToolCall }
+  | { type: "tool_call"; id: string; toolCall: CursorToolCall; completed: boolean }
   | { type: "request_context"; id: number; execId?: string }
   | { type: "interaction_query"; id: number; kind: InteractionQueryKind }
   | { type: "done" }
@@ -38,19 +38,26 @@ const INTERACTION_QUERY_FIELD_BY_KIND: Record<InteractionQueryKind, number> = {
 
 type ArgsKind =
   | "askQuestion"
+  | "await"
+  | "createPlan"
   | "delete"
-  | "edit"
   | "fetch"
+  | "generateImage"
   | "glob"
   | "grep"
+  | "listMcpResources"
   | "ls"
   | "mcp"
   | "readExec"
   | "readLints"
+  | "readMcpResource"
+  | "readTodos"
   | "readTool"
   | "semSearch"
   | "shell"
+  | "switchMode"
   | "task"
+  | "unsupported"
   | "updateTodos"
   | "webFetch"
   | "webSearch"
@@ -76,17 +83,51 @@ const TOOL_CALL_SPECS: Record<number, ToolSpec> = {
   5: { name: "grep", argsKind: "grep" },
   8: { name: "read", argsKind: "readTool" },
   9: { name: "todowrite", argsKind: "updateTodos" },
-  12: { name: "edit", argsKind: "edit" },
+  10: { name: "todoread", argsKind: "readTodos" },
   13: { name: "ls", argsKind: "ls" },
   14: { name: "readLints", argsKind: "readLints" },
   15: { name: "mcp", argsKind: "mcp" },
   16: { name: "semSearch", argsKind: "semSearch" },
+  17: { name: "createPlan", argsKind: "createPlan" },
   18: { name: "websearch", argsKind: "webSearch" },
   19: { name: "task", argsKind: "task" },
+  20: { name: "listMcpResources", argsKind: "listMcpResources" },
+  21: { name: "readMcpResource", argsKind: "readMcpResource" },
   23: { name: "question", argsKind: "askQuestion" },
   24: { name: "webfetch", argsKind: "fetch" },
-  37: { name: "webfetch", argsKind: "webFetch" }
+  25: { name: "switchMode", argsKind: "switchMode" },
+  28: { name: "generateImage", argsKind: "generateImage" },
+  37: { name: "webfetch", argsKind: "webFetch" },
+  42: { name: "await", argsKind: "await" }
 };
+
+const UNSUPPORTED_TOOL_CALL_SPECS: Record<number, ToolSpec> = {
+  22: { name: "recordGrind", argsKind: "unsupported" },
+  29: { name: "reportBug", argsKind: "unsupported" },
+  30: { name: "fixBug", argsKind: "unsupported" },
+  31: { name: "prManagement", argsKind: "unsupported" },
+  32: { name: "prReview", argsKind: "unsupported" },
+  33: { name: "ciFix", argsKind: "unsupported" },
+  34: { name: "ciStatus", argsKind: "unsupported" },
+  35: { name: "ciLogs", argsKind: "unsupported" },
+  36: { name: "ciRerun", argsKind: "unsupported" },
+  38: { name: "ciCancel", argsKind: "unsupported" },
+  39: { name: "ciApprove", argsKind: "unsupported" },
+  40: { name: "ciMerge", argsKind: "unsupported" },
+  41: { name: "ciComment", argsKind: "unsupported" },
+  43: { name: "ciDeploy", argsKind: "unsupported" },
+  44: { name: "ciRollback", argsKind: "unsupported" },
+  45: { name: "ciPromote", argsKind: "unsupported" },
+  46: { name: "ciRelease", argsKind: "unsupported" },
+  48: { name: "ciTag", argsKind: "unsupported" },
+  49: { name: "ciBranch", argsKind: "unsupported" },
+  50: { name: "ciCheckout", argsKind: "unsupported" },
+  51: { name: "ciCommit", argsKind: "unsupported" },
+  52: { name: "ciPush", argsKind: "unsupported" },
+  53: { name: "ciPull", argsKind: "unsupported" }
+};
+
+const UNSUPPORTED_TOOL_NAMES = new Set(Object.values(UNSUPPORTED_TOOL_CALL_SPECS).map((spec) => spec.name));
 
 const EXEC_TOOL_SPECS: Record<number, ToolSpec> = {
   2: { name: "shell", argsKind: "shell" },
@@ -97,7 +138,11 @@ const EXEC_TOOL_SPECS: Record<number, ToolSpec> = {
   8: { name: "ls", argsKind: "ls" },
   9: { name: "readLints", argsKind: "readLints" },
   11: { name: "mcp", argsKind: "mcp" },
-  14: { name: "shell", argsKind: "shell" }
+  14: { name: "shell", argsKind: "shell" },
+  16: { name: "shell", argsKind: "shell" },
+  17: { name: "listMcpResources", argsKind: "listMcpResources" },
+  18: { name: "readMcpResource", argsKind: "readMcpResource" },
+  20: { name: "webfetch", argsKind: "fetch" }
 };
 
 export async function createCursorSdkCompletion(
@@ -151,12 +196,16 @@ export const cursorSdkTestExports = {
   decodeInteractionQuery,
   decodeLocalAgentServerFrame,
   decodeSdkToolCall,
+  decodeToolCallUpdate,
   encodeAgentClientInteractionResponseApproved,
   encodeAgentClientRequestContextResult,
   encodeAgentClientRunRequest,
   formatHostedSdkToolResult,
+  formatUnsupportedSdkToolMessage,
   isCursorHostedSdkToolCall,
   isEmittableSdkToolCall,
+  isUnsupportedSdkToolCall,
+  mergePendingSdkToolCall,
   normalizeSdkToolCallForOpenCode,
   parseConnectProtoFrames,
   sdkTimeoutMsFromEnv
@@ -179,6 +228,8 @@ async function* streamCursorLocalSdkRun(
   let text = "";
   const toolCalls: CursorToolCall[] = [];
   const emittedToolCallIds = new Set<string>();
+  const emittedUnsupportedToolCallIds = new Set<string>();
+  const pendingToolCalls = new Map<string, { toolCall: CursorToolCall; completed: boolean }>();
   const requestId = deps.randomUUID();
   const requestBody = encodeConnectFrame(
     encodeAgentClientRunRequest({
@@ -223,15 +274,22 @@ async function* streamCursorLocalSdkRun(
           text += event.text;
           yield { type: "text", text: event.text };
         } else if (event.type === "tool_call") {
-          if (!isEmittableSdkToolCall(event.toolCall)) {
+          if (isUnsupportedSdkToolCall(event.toolCall)) {
+            if (!emittedUnsupportedToolCallIds.has(event.id)) {
+              emittedUnsupportedToolCallIds.add(event.id);
+              const message = formatUnsupportedSdkToolMessage(event.toolCall.name);
+              text += message;
+              yield { type: "text", text: message };
+            }
             continue;
           }
-          if (!emittedToolCallIds.has(event.id)) {
-            emittedToolCallIds.add(event.id);
-            toolCalls.push(event.toolCall);
-            yield { type: "tool_call", toolCall: event.toolCall };
-            yield { type: "done", finalText: text, toolCalls };
-            return;
+          upsertPendingSdkToolCall(pendingToolCalls, event.id, event.toolCall, event.completed);
+          for (const emitted of emitCompletedPendingSdkToolCalls(pendingToolCalls, emittedToolCallIds, toolCalls)) {
+            yield emitted;
+            if (emitted.type === "tool_call") {
+              yield { type: "done", finalText: text, toolCalls };
+              return;
+            }
           }
         } else if (event.type === "request_context") {
           if (uploadOpen && uploadWriter) {
@@ -242,6 +300,13 @@ async function* streamCursorLocalSdkRun(
             await writeSdkUpload(uploadWriter, encodeConnectFrame(encodeAgentClientInteractionResponseApproved(event)));
           }
         } else if (event.type === "done") {
+          for (const emitted of emitCompletedPendingSdkToolCalls(pendingToolCalls, emittedToolCallIds, toolCalls)) {
+            yield emitted;
+            if (emitted.type === "tool_call") {
+              yield { type: "done", finalText: text, toolCalls };
+              return;
+            }
+          }
           yield { type: "done", finalText: text, toolCalls };
           return;
         }
@@ -586,14 +651,25 @@ function decodeToolCallUpdate(payload: Uint8Array, completed: boolean): LocalSdk
     return null;
   }
   if (isCursorHostedSdkToolCall(decoded.toolCall)) return null;
-  return { type: "tool_call", id: callId, toolCall: normalizeSdkToolCallForOpenCode(decoded.toolCall) };
+  if (isUnsupportedSdkToolCall(decoded.toolCall)) {
+    return { type: "tool_call", id: callId, toolCall: decoded.toolCall, completed };
+  }
+  return {
+    type: "tool_call",
+    id: callId,
+    toolCall: normalizeSdkToolCallForOpenCode(decoded.toolCall),
+    completed
+  };
 }
 
 function decodeSdkToolCall(payload: Uint8Array): { toolCall: CursorToolCall; hasResult: boolean } | null {
   for (const field of decodeProtobufFields(payload)) {
     if (!(field.value instanceof Uint8Array)) continue;
-    const spec = TOOL_CALL_SPECS[field.no];
-    if (!spec) continue;
+    const spec = TOOL_CALL_SPECS[field.no] || UNSUPPORTED_TOOL_CALL_SPECS[field.no];
+    if (!spec) {
+      console.warn(`[cursor-sdk] unknown tool field number ${field.no}`);
+      continue;
+    }
     const toolFields = decodeProtobufFields(field.value);
     const args = bytesField(toolFields, 1);
     const hasResult = toolFields.some((item) => item.no === 2);
@@ -621,24 +697,15 @@ function decodeExecServerToolCall(payload: Uint8Array, fields = decodeProtobufFi
     return {
       type: "tool_call",
       id: toolCallId,
-      toolCall: normalizeSdkToolCallForOpenCode({ name: spec.name, arguments: args })
+      toolCall: normalizeSdkToolCallForOpenCode({ name: spec.name, arguments: args }),
+      completed: true
     };
   }
   return null;
 }
 
 function normalizeSdkToolCallForOpenCode(toolCall: CursorToolCall): CursorToolCall {
-  if (toolCall.name.toLowerCase() !== "edit") return toolCall;
-  const path = stringArg(toolCall.arguments, "path");
-  const streamContent = stringArg(toolCall.arguments, "streamContent");
-  if (!path || streamContent === undefined) return toolCall;
-  return {
-    name: "write",
-    arguments: {
-      path,
-      fileText: streamContent
-    }
-  };
+  return toolCall;
 }
 
 function decodeToolArgs(kind: ArgsKind, payload: Uint8Array): Record<string, unknown> {
@@ -694,8 +761,6 @@ function decodeToolArgs(kind: ArgsKind, payload: Uint8Array): Record<string, unk
         offset: numberField(fields, 4),
         limit: numberField(fields, 5)
       });
-    case "edit":
-      return compactRecord({ path: stringField(fields, 1), streamContent: stringField(fields, 6) });
     case "ls":
       return compactRecord({ path: stringField(fields, 1), ignore: stringFields(fields, 2), toolCallId: stringField(fields, 3) });
     case "readLints":
@@ -732,7 +797,89 @@ function decodeToolArgs(kind: ArgsKind, payload: Uint8Array): Record<string, unk
       return compactRecord({
         questions: repeatedMessageFields(fields, 2).map(decodeAskQuestionItem).filter((item) => hasStringArg(item, "question"))
       });
+    case "readTodos":
+      return compactRecord({ merge: booleanField(fields, 1), toolCallId: stringField(fields, 2) });
+    case "createPlan":
+      return compactRecord({ plan: stringField(fields, 1), toolCallId: stringField(fields, 2) });
+    case "listMcpResources":
+      return compactRecord({ server: stringField(fields, 1), toolCallId: stringField(fields, 2) });
+    case "readMcpResource":
+      return compactRecord({
+        server: stringField(fields, 1),
+        uri: stringField(fields, 2),
+        downloadPath: stringField(fields, 3),
+        toolCallId: stringField(fields, 4)
+      });
+    case "switchMode":
+      return compactRecord({ targetModeId: stringField(fields, 1), explanation: stringField(fields, 2) });
+    case "generateImage":
+      return compactRecord({
+        description: stringField(fields, 1),
+        filename: stringField(fields, 2),
+        toolCallId: stringField(fields, 3)
+      });
+    case "await":
+      return compactRecord({ shellId: stringField(fields, 1), pattern: stringField(fields, 2), toolCallId: stringField(fields, 3) });
+    case "unsupported":
+      return {};
   }
+}
+
+function upsertPendingSdkToolCall(
+  pendingToolCalls: Map<string, { toolCall: CursorToolCall; completed: boolean }>,
+  id: string,
+  toolCall: CursorToolCall,
+  completed: boolean
+): void {
+  const existing = pendingToolCalls.get(id);
+  if (!existing) {
+    pendingToolCalls.set(id, { toolCall, completed });
+    return;
+  }
+  pendingToolCalls.set(id, {
+    toolCall: mergePendingSdkToolCall(existing.toolCall, toolCall),
+    completed: existing.completed || completed
+  });
+}
+
+function mergePendingSdkToolCall(existing: CursorToolCall, incoming: CursorToolCall): CursorToolCall {
+  const mergedArgs: Record<string, unknown> = { ...(existing.arguments ?? {}), ...(incoming.arguments ?? {}) };
+  const existingStream = stringArg(existing.arguments ?? {}, "streamContent");
+  const incomingStream = stringArg(incoming.arguments ?? {}, "streamContent");
+  if (existingStream !== undefined && incomingStream !== undefined) {
+    mergedArgs.streamContent = incomingStream.length >= existingStream.length ? incomingStream : existingStream;
+  }
+  return {
+    name: incoming.name || existing.name,
+    arguments: mergedArgs
+  };
+}
+
+function isPendingSdkToolCallReady(pending: { toolCall: CursorToolCall; completed: boolean }): boolean {
+  if (pending.completed) return true;
+  return isEmittableSdkToolCall(pending.toolCall);
+}
+
+function* emitCompletedPendingSdkToolCalls(
+  pendingToolCalls: Map<string, { toolCall: CursorToolCall; completed: boolean }>,
+  emittedToolCallIds: Set<string>,
+  toolCalls: CursorToolCall[]
+): Generator<CursorTextEvent> {
+  for (const [id, pending] of pendingToolCalls) {
+    if (!isPendingSdkToolCallReady(pending) || emittedToolCallIds.has(id) || !isEmittableSdkToolCall(pending.toolCall)) continue;
+    emittedToolCallIds.add(id);
+    const normalized = normalizeSdkToolCallForOpenCode(pending.toolCall);
+    toolCalls.push(normalized);
+    yield { type: "tool_call", toolCall: normalized };
+  }
+}
+
+function isUnsupportedSdkToolCall(toolCall: CursorToolCall): boolean {
+  return UNSUPPORTED_TOOL_NAMES.has(toolCall.name);
+}
+
+function formatUnsupportedSdkToolMessage(toolName: string): string {
+  return `\n\nTool "${toolName}" is not available in this environment. Use an alternative approach or ask the user for guidance.\n\n`;
 }
 
 function decodeTodoItem(payload: Uint8Array): Record<string, unknown> {
@@ -955,6 +1102,7 @@ function decodeHostedXmlEntities(text: string): string {
 }
 
 function isEmittableSdkToolCall(toolCall: CursorToolCall): boolean {
+  if (isUnsupportedSdkToolCall(toolCall)) return false;
   if (isCursorHostedSdkToolCall(toolCall)) return false;
   const name = toolCall.name.toLowerCase();
   const args = toolCall.arguments ?? {};
@@ -962,12 +1110,6 @@ function isEmittableSdkToolCall(toolCall: CursorToolCall): boolean {
   if (name === "ls") return true;
   if (name === "shell") return hasStringArg(args, "command");
   if (name === "write") return hasStringArg(args, "path") && hasStringArg(args, "fileText");
-  if (name === "edit") {
-    return (
-      hasStringArg(args, "path") &&
-      (hasStringArg(args, "patchContent") || hasStringArg(args, "oldText") || hasStringArg(args, "newText") || hasStringArg(args, "streamContent"))
-    );
-  }
   if (name === "read" || name === "delete") return hasStringArg(args, "path");
   if (name === "grep") return hasStringArg(args, "pattern");
   if (name === "semSearch") return hasStringArg(args, "query");
