@@ -155,9 +155,9 @@ async function proxySdkRun(response, input) {
           return;
         }
         for (const frame of parser.push(chunk)) {
-          const requestContext = !contextSent ? decodeRequestContextEvent(frame.payload) : null;
+          const requestContext = decodeRequestContextEvent(frame.payload);
           if (requestContext) {
-            contextSent = true;
+            if (!contextSent) contextSent = true;
             request.write(connectFrame(encodeAgentClientRequestContextResult(requestContext)));
             continue;
           }
@@ -285,7 +285,13 @@ function decodeInteractionQueryEvent(payload) {
       const id = numberField(fields, 1) || 0;
       for (const [kind, fieldNo] of Object.entries(INTERACTION_QUERY_FIELDS)) {
         if (fields.some((item) => item.no === fieldNo && item.value instanceof Uint8Array)) {
-          return { id, kind };
+          return { id, kind, fieldNo };
+        }
+      }
+      for (const item of fields) {
+        if (item.no !== 1 && item.value instanceof Uint8Array) {
+          console.warn(`[bridge] auto-approving unknown interaction query field ${item.no}`);
+          return { id, kind: "unknown", fieldNo: item.no };
         }
       }
     }
@@ -297,7 +303,7 @@ function decodeInteractionQueryEvent(payload) {
 
 function encodeAgentClientInteractionResponseApproved(input) {
   const approved = protoMessage([]);
-  const responseFieldNo = INTERACTION_QUERY_FIELDS[input.kind];
+  const responseFieldNo = input.fieldNo ?? INTERACTION_QUERY_FIELDS[input.kind];
   const wrapper = protoMessage([protoMessageField(1, approved)]);
   const interactionResponse = protoMessage([
     protoVarintField(1, input.id),

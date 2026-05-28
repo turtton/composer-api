@@ -25,9 +25,11 @@ type InteractionQueryKind = "websearch" | "webfetch";
 
 type LocalSdkDecodedEvent =
   | { type: "text"; text: string }
+  | { type: "thinking"; text: string }
   | { type: "tool_call"; id: string; toolCall: CursorToolCall; completed: boolean }
   | { type: "request_context"; id: number; execId?: string }
-  | { type: "interaction_query"; id: number; kind: InteractionQueryKind }
+  | { type: "interaction_query"; id: number; kind: InteractionQueryKind; fieldNo: number }
+  | { type: "subagent_output"; toolCallId: string; text: string }
   | { type: "done" }
   | { type: "ignore" };
 
@@ -269,14 +271,39 @@ async function* streamCursorLocalSdkRun(
 
   try {
     let yieldedInFrame = false;
+    let frameIndex = 0;
+    let subagentActive = false;
+    let subagentLastOutputTime = 0;
+    let subagentIdleFrames = 0;
+    const SUBAGENT_IDLE_FRAME_THRESHOLD = 3;
+    const SUBAGENT_IDLE_TIME_MS = 5_000;
+
     for await (const frame of parseConnectProtoFrames(response.body, { idleTimeoutMs, signal: runAbort.signal })) {
       yieldedInFrame = false;
-      for (const event of decodeLocalAgentServerFrame(frame)) {
+      const events = decodeLocalAgentServerFrame(frame);
+      const evtSummary = events.map((e) => e.type === "tool_call" ? `tool_call(${e.toolCall.name},completed=${e.completed})` : e.type).join(",");
+      if (evtSummary === "ignore" && frame.length > 10) {
+        const topFields = decodeProtobufFields(frame).map((f) => `${f.no}:${f.value instanceof Uint8Array ? `b(${f.value.length})` : `v(${f.value})`}`);
+        console.log(`[sdk-debug] frame#${frameIndex} size=${frame.length} events=[ignore] topFields=[${topFields.join(",")}]`);
+      } else {
+        console.log(`[sdk-debug] frame#${frameIndex} size=${frame.length} events=[${evtSummary}]`);
+      }
+      let frameHasSubagentOutput = false;
+      for (const event of events) {
         if (event.type === "text" && event.text) {
           text += event.text;
           yield { type: "text", text: event.text };
           yieldedInFrame = true;
+        } else if (event.type === "thinking" && event.text) {
+          yield { type: "thinking", text: event.text };
+          yieldedInFrame = true;
+        } else if (event.type === "subagent_output") {
+          subagentActive = true;
+          subagentLastOutputTime = Date.now();
+          subagentIdleFrames = 0;
+          frameHasSubagentOutput = true;
         } else if (event.type === "tool_call") {
+          console.log(`[sdk-debug] tool_call id=${event.id} name=${event.toolCall.name} completed=${event.completed} args=${JSON.stringify(event.toolCall.arguments).slice(0, 200)}`);
           if (isUnsupportedSdkToolCall(event.toolCall)) {
             if (!emittedUnsupportedToolCallIds.has(event.id)) {
               emittedUnsupportedToolCallIds.add(event.id);
@@ -289,18 +316,39 @@ async function* streamCursorLocalSdkRun(
           }
           upsertPendingSdkToolCall(pendingToolCalls, event.id, event.toolCall, event.completed);
           for (const emitted of emitCompletedPendingSdkToolCalls(pendingToolCalls, emittedToolCallIds, toolCalls)) {
+            console.log(`[sdk-debug] emitting pending tool_call name=${emitted.type === "tool_call" ? emitted.toolCall.name : "?"}`);
             yield emitted;
             yieldedInFrame = true;
           }
         } else if (event.type === "request_context") {
+          console.log(`[sdk-debug] request_context id=${event.id}`);
           if (uploadOpen && uploadWriter) {
             await writeSdkUpload(uploadWriter, encodeConnectFrame(encodeAgentClientRequestContextResult(event)));
           }
         } else if (event.type === "interaction_query") {
+          console.log(`[sdk-debug] interaction_query id=${event.id} kind=${event.kind} fieldNo=${event.fieldNo}`);
           if (uploadOpen && uploadWriter) {
             await writeSdkUpload(uploadWriter, encodeConnectFrame(encodeAgentClientInteractionResponseApproved(event)));
+            console.log(`[sdk-debug] sent approval for interaction_query id=${event.id}`);
+          } else {
+            console.warn(`[sdk-debug] cannot send approval: uploadOpen=${uploadOpen} uploadWriter=${!!uploadWriter}`);
           }
         } else if (event.type === "done") {
+          console.log(`[sdk-debug] done event, pending=${pendingToolCalls.size} emitted=${emittedToolCallIds.size}`);
+          for (const emitted of emitCompletedPendingSdkToolCalls(pendingToolCalls, emittedToolCallIds, toolCalls)) {
+            yield emitted;
+          }
+          yield { type: "done", finalText: text, toolCalls };
+          return;
+        } else if (event.type === "ignore") {
+          // no-op
+        }
+      }
+      if (subagentActive && !frameHasSubagentOutput) {
+        subagentIdleFrames++;
+        const elapsedMs = Date.now() - subagentLastOutputTime;
+        if (subagentIdleFrames >= SUBAGENT_IDLE_FRAME_THRESHOLD && elapsedMs >= SUBAGENT_IDLE_TIME_MS) {
+          console.log(`[sdk-debug] subagent done (${subagentIdleFrames} idle frames, ${elapsedMs}ms elapsed), synthesizing done`);
           for (const emitted of emitCompletedPendingSdkToolCalls(pendingToolCalls, emittedToolCallIds, toolCalls)) {
             yield emitted;
           }
@@ -311,7 +359,9 @@ async function* streamCursorLocalSdkRun(
       if (!yieldedInFrame) {
         yield { type: "keepalive" as const };
       }
+      frameIndex++;
     }
+    console.log(`[sdk-debug] stream ended naturally after ${frameIndex} frames without done event`);
   } finally {
     clearTimeout(runTimer);
     if (uploadOpen && uploadWriter) await closeSdkUpload(uploadWriter);
@@ -530,13 +580,12 @@ function encodeAgentClientRunRequest(input: { agentId: string; messageId: string
   return protoMessage([protoMessageField(1, runRequest)]);
 }
 
-function encodeAgentClientInteractionResponseApproved(input: { id: number; kind: InteractionQueryKind }): Uint8Array {
+function encodeAgentClientInteractionResponseApproved(input: { id: number; kind: InteractionQueryKind; fieldNo: number }): Uint8Array {
   const approved = protoMessage([]);
-  const responseFieldNo = INTERACTION_QUERY_FIELD_BY_KIND[input.kind];
   const wrapper = protoMessage([protoMessageField(1, approved)]);
   const interactionResponse = protoMessage([
     protoVarintField(1, input.id),
-    protoMessageField(responseFieldNo, wrapper)
+    protoMessageField(input.fieldNo, wrapper)
   ]);
   return protoMessage([protoMessageField(6, interactionResponse)]);
 }
@@ -585,10 +634,16 @@ function decodeLocalAgentServerFrame(payload: Uint8Array): LocalSdkDecodedEvent[
         output.push(...decodeInteractionUpdate(field.value));
       } else if (field.no === 2 && field.value instanceof Uint8Array) {
         const event = decodeExecServerMessage(field.value);
-        if (event) output.push(event);
+        if (event) {
+          output.push(event);
+        } else {
+          console.log(`[sdk-debug] exec server message produced no event, size=${field.value.length}`);
+        }
       } else if (field.no === 7 && field.value instanceof Uint8Array) {
         const event = decodeInteractionQuery(field.value);
         if (event) output.push(event);
+      } else if (field.value instanceof Uint8Array) {
+        console.warn(`[sdk-debug] unhandled server frame field no=${field.no} size=${field.value.length} dump=${dumpProtoFields(field.value, 2)}`);
       }
     }
   } catch (error) {
@@ -603,7 +658,13 @@ function decodeInteractionQuery(payload: Uint8Array): LocalSdkDecodedEvent | nul
   const id = numberField(fields, 1) || 0;
   for (const [kind, fieldNo] of Object.entries(INTERACTION_QUERY_FIELD_BY_KIND) as Array<[InteractionQueryKind, number]>) {
     if (fields.some((field) => field.no === fieldNo && field.value instanceof Uint8Array)) {
-      return { type: "interaction_query", id, kind };
+      return { type: "interaction_query", id, kind, fieldNo };
+    }
+  }
+  for (const field of fields) {
+    if (field.no !== 1 && field.value instanceof Uint8Array) {
+      console.warn(`[cursor-sdk] auto-approving unknown interaction query field ${field.no}`);
+      return { type: "interaction_query", id, kind: "websearch", fieldNo: field.no };
     }
   }
   return null;
@@ -618,7 +679,12 @@ function decodeExecServerMessage(payload: Uint8Array): LocalSdkDecodedEvent | nu
       execId: stringField(fields, 15)
     };
   }
-  return decodeExecServerToolCall(payload, fields);
+  const toolCall = decodeExecServerToolCall(payload, fields);
+  if (!toolCall) {
+    const fieldNos = fields.map((f) => `${f.no}(${f.value instanceof Uint8Array ? `${f.value.length}B` : `v=${f.value}`})`).join(",");
+    console.log(`[sdk-debug] decodeExecServerMessage returned null, fields=[${fieldNos}]`);
+  }
+  return toolCall;
 }
 
 function decodeInteractionUpdate(payload: Uint8Array): LocalSdkDecodedEvent[] {
@@ -630,9 +696,28 @@ function decodeInteractionUpdate(payload: Uint8Array): LocalSdkDecodedEvent[] {
       if (text) output.push({ type: "text", text });
     } else if (field.no === 2 || field.no === 3 || field.no === 7) {
       const event = decodeToolCallUpdate(field.value, field.no === 3);
-      if (event) output.push(event);
+      if (event) {
+        output.push(event);
+      } else {
+        console.log(`[sdk-debug] decodeToolCallUpdate returned null for interaction field=${field.no} (completed=${field.no === 3})`);
+      }
+    } else if (field.no === 4) {
+      const thinkingText = stringField(decodeProtobufFields(field.value), 1);
+      if (thinkingText) output.push({ type: "thinking", text: thinkingText });
     } else if (field.no === 14) {
       output.push({ type: "done" });
+    } else if (field.no === 15) {
+      const subFields = decodeProtobufFields(field.value);
+      const toolCallId = stringField(subFields, 1) || "";
+      const dataField = subFields.find((f) => f.no === 2 && f.value instanceof Uint8Array);
+      if (dataField && dataField.value instanceof Uint8Array) {
+        const dataText = stringField(decodeProtobufFields(dataField.value as Uint8Array), 2);
+        if (toolCallId && dataText) {
+          output.push({ type: "subagent_output", toolCallId, text: dataText });
+        }
+      }
+    } else {
+      console.log(`[sdk-debug] unhandled interaction update field no=${field.no} size=${field.value.length} dump=${dumpProtoFields(field.value, 2)}`);
     }
   }
   return output;
@@ -642,13 +727,18 @@ function decodeToolCallUpdate(payload: Uint8Array, completed: boolean): LocalSdk
   const fields = decodeProtobufFields(payload);
   const callId = stringField(fields, 1) || stableToolCallId(payload);
   const toolCallBytes = bytesField(fields, 2);
-  if (!toolCallBytes) return null;
+  if (!toolCallBytes) { console.log(`[sdk-debug] decodeToolCallUpdate: no toolCallBytes, callId=${callId}`); return null; }
   const decoded = decodeSdkToolCall(toolCallBytes);
-  if (!decoded) return null;
+  if (!decoded) { console.log(`[sdk-debug] decodeToolCallUpdate: decodeSdkToolCall returned null, callId=${callId}`); return null; }
+  console.log(`[sdk-debug] decodeToolCallUpdate: callId=${callId} name=${decoded.toolCall.name} completed=${completed} hasResult=${decoded.hasResult} forwarded=${isSdkToolCallForwardedToClient(decoded.toolCall)}`);
   if (completed && decoded.hasResult) {
     const hostedText = decodeCursorHostedToolResultText(decoded.toolCall, toolCallBytes);
     if (hostedText) return { type: "text", text: hostedText };
-    return null;
+    if (!isSdkToolCallForwardedToClient(decoded.toolCall)) {
+      console.log(`[sdk-debug] dropping completed non-forwarded tool: ${decoded.toolCall.name}`);
+      return null;
+    }
+    console.log(`[sdk-debug] passing through completed forwarded tool: ${decoded.toolCall.name}`);
   }
   if (isCursorHostedSdkToolCall(decoded.toolCall)) return null;
   if (isUnsupportedSdkToolCall(decoded.toolCall)) {
@@ -958,6 +1048,8 @@ function decodeSubagentType(payload: Uint8Array | undefined): string | undefined
         return "cursor-guide";
       case 12:
         return "watch_video";
+      default:
+        return `subagent_field_${field.no}`;
     }
   }
   return undefined;
@@ -979,6 +1071,12 @@ function normalizeSubagentTypeForOpenCode(value: string | undefined): string | u
 function isCursorHostedSdkToolCall(toolCall: CursorToolCall): boolean {
   const name = toolCall.name.toLowerCase();
   return name === "websearch" || name === "webfetch";
+}
+
+const CLIENT_FORWARDED_TOOL_NAMES = new Set(["task", "todowrite", "question"]);
+
+function isSdkToolCallForwardedToClient(toolCall: CursorToolCall): boolean {
+  return CLIENT_FORWARDED_TOOL_NAMES.has(toolCall.name.toLowerCase());
 }
 
 function decodeCursorHostedToolResultText(toolCall: CursorToolCall, toolCallBytes: Uint8Array): string | null {
@@ -1390,4 +1488,35 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function dumpProtoFields(payload: Uint8Array, maxDepth: number): string {
+  if (maxDepth <= 0 || payload.length === 0) return `[${payload.length}B]`;
+  try {
+    const fields = decodeProtobufFields(payload);
+    if (!fields.length) return `[${payload.length}B empty]`;
+    return `{${fields.map((f) => {
+      if (f.value instanceof Uint8Array) {
+        const str = tryDecodeUtf8Short(f.value);
+        if (str !== null) return `${f.no}:str(${str})`;
+        return `${f.no}:${dumpProtoFields(f.value, maxDepth - 1)}`;
+      }
+      return `${f.no}:v(${f.value})`;
+    }).join(",")}}`;
+  } catch {
+    return `[${payload.length}B unparseable]`;
+  }
+}
+
+function tryDecodeUtf8Short(bytes: Uint8Array): string | null {
+  if (bytes.length === 0 || bytes.length > 200) return null;
+  for (let i = 0; i < Math.min(bytes.length, 20); i++) {
+    if (bytes[i] < 0x20 && bytes[i] !== 0x0a && bytes[i] !== 0x0d && bytes[i] !== 0x09) return null;
+  }
+  try {
+    const s = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return s.length > 100 ? s.slice(0, 100) + "..." : s;
+  } catch {
+    return null;
+  }
 }

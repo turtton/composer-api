@@ -111,7 +111,7 @@ describe("Cursor SDK harness", () => {
     ]);
     const frame = protoMessage([protoBytesField(7, query)]);
     const events = cursorSdkTestExports.decodeLocalAgentServerFrame(frame);
-    expect(events).toEqual([{ type: "interaction_query", id: 42, kind: "websearch" }]);
+    expect(events).toEqual([{ type: "interaction_query", id: 42, kind: "websearch", fieldNo: 2 }]);
   });
 
   it("decodes web fetch interaction queries from the SDK stream", () => {
@@ -121,11 +121,11 @@ describe("Cursor SDK harness", () => {
     ]);
     const frame = protoMessage([protoBytesField(7, query)]);
     const events = cursorSdkTestExports.decodeLocalAgentServerFrame(frame);
-    expect(events).toEqual([{ type: "interaction_query", id: 7, kind: "webfetch" }]);
+    expect(events).toEqual([{ type: "interaction_query", id: 7, kind: "webfetch", fieldNo: 9 }]);
   });
 
   it("encodes an approved interaction response for websearch", () => {
-    const encoded = cursorSdkTestExports.encodeAgentClientInteractionResponseApproved({ id: 9, kind: "websearch" });
+    const encoded = cursorSdkTestExports.encodeAgentClientInteractionResponseApproved({ id: 9, kind: "websearch", fieldNo: 2 });
     const top = decodeFields(encoded);
     expect(top).toHaveLength(1);
     expect(top[0].no).toBe(6);
@@ -139,7 +139,7 @@ describe("Cursor SDK harness", () => {
   });
 
   it("encodes an approved interaction response for webfetch on field 9", () => {
-    const encoded = cursorSdkTestExports.encodeAgentClientInteractionResponseApproved({ id: 12, kind: "webfetch" });
+    const encoded = cursorSdkTestExports.encodeAgentClientInteractionResponseApproved({ id: 12, kind: "webfetch", fieldNo: 9 });
     const top = decodeFields(encoded);
     const interactionResponse = decodeFields(top[0].value as Uint8Array);
     expect(interactionResponse.find((field) => field.no === 1)?.value).toBe(12);
@@ -437,6 +437,70 @@ describe("Cursor SDK harness", () => {
       }
     });
     expect(cursorSdkTestExports.isEmittableSdkToolCall(question!.toolCall)).toBe(true);
+  });
+
+  it("falls back to subagent_field_N for unknown subagent type field numbers", () => {
+    const unknownField = 42;
+    const decoded = cursorSdkTestExports.decodeSdkToolCall(
+      encodeToolCall({
+        taskToolCall: encodeTaskToolCall(
+          encodeTaskArgs({
+            description: "Unknown subagent",
+            prompt: "Do something.",
+            subagentType: protoMessage([protoBytesField(unknownField, new Uint8Array(0))])
+          })
+        )
+      })
+    );
+    expect(decoded?.toolCall.arguments.subagent_type).toBe(`subagent_field_${unknownField}`);
+  });
+
+  it("does not drop completed task tool calls from decodeToolCallUpdate", () => {
+    const taskArgs = encodeTaskArgs({
+      description: "Search codebase",
+      prompt: "Find auth middleware.",
+      subagentType: encodeSubagentTypeExplore()
+    });
+    const resultBytes = protoMessage([protoBytesField(1, protoMessage([protoStringField(1, "done")]))]);
+    const toolCallWithResult = protoMessage([protoBytesField(19, protoMessage([protoBytesField(1, taskArgs), protoBytesField(2, resultBytes)]))]);
+    const update = protoMessage([protoStringField(1, "call_task_1"), protoBytesField(2, toolCallWithResult)]);
+    const result = cursorSdkTestExports.decodeToolCallUpdate(update, true);
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("tool_call");
+    expect(result!.completed).toBe(true);
+    expect((result as { toolCall: { name: string } }).toolCall.name).toBe("task");
+  });
+
+  it("decodes thinking text from interaction update field 4", () => {
+    const thinkingField = protoMessage([protoStringField(1, "The user wants to search"), protoVarintField(2, 1)]);
+    const interaction = protoMessage([protoBytesField(4, thinkingField)]);
+    const frame = protoMessage([protoBytesField(1, interaction)]);
+    const events = cursorSdkTestExports.decodeLocalAgentServerFrame(frame);
+    expect(events).toEqual([{ type: "thinking", text: "The user wants to search" }]);
+  });
+
+  it("decodes subagent output from interaction update field 15", () => {
+    const dataContent = protoMessage([protoStringField(2, "I am Composer")]);
+    const subagentField = protoMessage([
+      protoStringField(1, "call_task_1"),
+      protoBytesField(2, dataContent),
+      protoStringField(3, "run-abc-123")
+    ]);
+    const interaction = protoMessage([protoBytesField(15, subagentField)]);
+    const frame = protoMessage([protoBytesField(1, interaction)]);
+    const events = cursorSdkTestExports.decodeLocalAgentServerFrame(frame);
+    expect(events).toEqual([{ type: "subagent_output", toolCallId: "call_task_1", text: "I am Composer" }]);
+  });
+
+  it("ignores subagent output with empty data", () => {
+    const subagentField = protoMessage([
+      protoStringField(1, "call_task_1"),
+      protoStringField(3, "run-abc-123")
+    ]);
+    const interaction = protoMessage([protoBytesField(15, subagentField)]);
+    const frame = protoMessage([protoBytesField(1, interaction)]);
+    const events = cursorSdkTestExports.decodeLocalAgentServerFrame(frame);
+    expect(events).toEqual([{ type: "ignore" }]);
   });
 });
 
