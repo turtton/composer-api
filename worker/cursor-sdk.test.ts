@@ -165,7 +165,9 @@ describe("Cursor SDK harness", () => {
   });
 
   it("allows SDK tool calls once required execution arguments are available", () => {
-    expect(cursorSdkTestExports.isEmittableSdkToolCall({ name: "glob", arguments: {} })).toBe(true);
+    expect(cursorSdkTestExports.isEmittableSdkToolCall({ name: "glob", arguments: {} })).toBe(false);
+    expect(cursorSdkTestExports.isEmittableSdkToolCall({ name: "glob", arguments: { globPattern: "**/*.ts" } })).toBe(true);
+    expect(cursorSdkTestExports.isEmittableSdkToolCall({ name: "glob", arguments: { targetDirectory: "/some/path" } })).toBe(true);
     expect(cursorSdkTestExports.isEmittableSdkToolCall({ name: "write", arguments: { path: "package.json", fileText: "{}" } })).toBe(true);
     expect(cursorSdkTestExports.isEmittableSdkToolCall({ name: "shell", arguments: { command: "npm test" } })).toBe(true);
     expect(

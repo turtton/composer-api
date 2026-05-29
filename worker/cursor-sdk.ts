@@ -1230,7 +1230,7 @@ function isEmittableSdkToolCall(toolCall: CursorToolCall): boolean {
   if (isCursorHostedSdkToolCall(toolCall)) return false;
   const name = toolCall.name.toLowerCase();
   const args = toolCall.arguments ?? {};
-  if (name === "glob") return true;
+  if (name === "glob") return hasStringArg(args, "globPattern") || hasStringArg(args, "targetDirectory");
   if (name === "ls") return true;
   if (name === "shell") return hasStringArg(args, "command");
   if (name === "write") return hasStringArg(args, "path") && hasStringArg(args, "fileText");

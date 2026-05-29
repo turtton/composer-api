@@ -1536,7 +1536,7 @@ function toolSpecificArgumentAliases(tool: string, normalized: string): Array<{ 
       return [{ candidates: ["pattern", "glob", "include"], priority: 98 }];
     }
     if (["targeting", "targetdirectory", "cwd", "directory", "path"].includes(normalized)) {
-      return [{ candidates: ["pattern", "path", "directory", "cwd"], priority: 40 }];
+      return [{ candidates: ["path", "directory", "cwd", "target_directory"], priority: 40 }];
     }
   }
   if (["grep", "search", "searchfiles"].includes(tool)) {
