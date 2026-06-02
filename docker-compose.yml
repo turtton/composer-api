@@ -1,0 +1,26 @@
+services:
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: bridge
+    ports:
+      - "8792:8792"
+    environment:
+      - CURSOR_SDK_BRIDGE_HOST=0.0.0.0
+      - CURSOR_SDK_BRIDGE_PORT=8792
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    ports:
+      - "8787:8787"
+    environment:
+      - PORT=8787
+      - CURSOR_SDK_BRIDGE_URL=http://bridge:8792/sdk
+    depends_on:
+      - bridge
+    restart: unless-stopped
