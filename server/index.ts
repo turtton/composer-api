@@ -202,7 +202,9 @@ function streamChatCompletion(
     }
   };
 
-  pump();
+  pump().catch((error) => {
+    console.error("Stream pump error:", error instanceof Error ? error.message : error);
+  });
   return sseResponse(readable);
 }
 
@@ -262,6 +264,7 @@ async function handleChatCompletions(request: Request): Promise<Response> {
 
 const server = Bun.serve({
   port: PORT,
+  idleTimeout: 0,
   async fetch(request) {
     if (request.method === "OPTIONS") return optionsResponse();
 
