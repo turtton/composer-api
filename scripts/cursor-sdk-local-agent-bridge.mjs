@@ -307,12 +307,20 @@ async function runLocalAgentBody(input, onRun, onEvent) {
           }
           continue;
         }
-        if (event.type === "tool_call") {
-          if (event.status && event.status !== "running") continue;
-          await captureToolCall({ type: event.name, args: event.args }, { waitForCancel: false });
-          if (capturedToolCall) break;
-        }
-      }
+    if (event.type === "tool_call") {
+      if (event.status && event.status !== "running") continue;
+      await captureToolCall({ type: event.name, args: event.args }, { waitForCancel: false });
+      if (capturedToolCall) break;
+    }
+    if (event.type === "thinking") {
+      const thinkingText = extractEventText(event);
+      if (thinkingText && onEvent) onEvent({ type: "thinking", text: thinkingText });
+      continue;
+    }
+    if (event.type !== "assistant" && event.type !== "tool_call") {
+      console.warn("[SDK bridge] Unknown stream event type:", event.type, "keys:", Object.keys(event || {}).join(","));
+    }
+  }
     }
   } catch (error) {
     if (!capturedToolCall && !(cancelRequested && isBenignCancellationError(error))) {
@@ -2018,6 +2026,12 @@ function sdkWorkingDirectory(value) {
   const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed || trimmed.toLowerCase() === "undefined" || trimmed.toLowerCase() === "null") return defaultCwd;
   return trimmed;
+}
+
+function extractEventText(event) {
+  if (typeof event?.text === "string") return event.text;
+  const blocks = Array.isArray(event?.message?.content) ? event.message.content : [];
+  return blocks.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("");
 }
 
 function stripFinalMarker(text) {

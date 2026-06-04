@@ -164,6 +164,10 @@ function streamChatCompletion(
               );
               toolCallCount += 1;
             }
+          } else if (event.type === "thinking" && event.text) {
+            await writer.write(
+              chatChunk({ id, created, model: prepared.model, reasoningContent: event.text })
+            );
           } else if (event.type === "done") {
             text = event.output?.text ?? text;
           } else if (event.type === "error") {
@@ -172,6 +176,8 @@ function streamChatCompletion(
               500,
               "cursor_sdk_error"
             );
+          } else if (event.type) {
+            console.warn("[API server] Unknown bridge event type:", event.type);
           }
         }
       }
